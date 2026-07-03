@@ -1,0 +1,31 @@
+{
+  "name": "ai-test-platform",
+  "version": "0.1.0",
+  "private": false,
+  "license": "Apache-2.0",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@ant-design/icons": "^5.3.7",
+    "antd": "^5.17.4",
+    "axios": "^1.7.2",
+    "dayjs": "^1.11.11",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-markdown": "^10.1.0",
+    "react-router-dom": "^6.23.1",
+    "recharts": "^2.12.7",
+    "remark-gfm": "^4.0.1",
+    "zustand": "^4.5.2"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.2.13"
+  }
+}

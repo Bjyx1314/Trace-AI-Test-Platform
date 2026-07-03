@@ -1,0 +1,25 @@
+fastapi==0.111.0
+uvicorn[standard]==0.30.0
+sqlalchemy>=2.0.36
+asyncpg>=0.30.0
+alembic>=1.13.2
+anthropic==0.28.0
+httpx==0.27.0
+python-multipart==0.0.9
+pydantic>=2.9
+pydantic-settings>=2.5
+python-dotenv==1.0.1
+aiosqlite>=0.17.0
+python-docx>=1.1.0
+pypdf>=5.0.0
+pytest>=8.0.0
+pytest-json-report>=1.5.0
+pytest-playwright>=0.5.0
+pytest-xdist>=3.5.0
+playwright==1.60.0  # 固定版本：与框架 fw-venv 的 playwright 对齐，共用同一 chromium 构建(1223)，避免重建镜像时升级导致浏览器版本不匹配、框架登录冒烟报 "playwright install"
+pillow>=10.0.0
+pyyaml>=6.0
+pypinyin>=0.51.0
+rq>=1.16.0
+redis>=5.0.0
+uiautomator2>=3.0.0  # Sonic 远程真机 in-proc 执行(AI 视觉驱动)，经 adb connect 连远程设备

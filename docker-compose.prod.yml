@@ -1,0 +1,81 @@
+# 生产部署：postgres + redis + backend(FastAPI+PC框架) + frontend(nginx)
+# 用法(服务器)：
+#   1) 复制 .env.example 与 backend/.env.example，并替换所有示例密钥
+#   2) 如需外部框架，通过 WEB_FRAMEWORK_PATH / API_FRAMEWORK_PATH 挂载
+#   3) docker compose -f docker-compose.prod.yml up -d --build
+services:
+  postgres:
+    image: postgres:16
+    container_name: tp_pg
+    restart: unless-stopped
+    # 强制服务端会话时区为东八区：asyncpg 用的是服务端 timezone GUC，
+    # 仅靠 TZ 环境变量改不动已 initdb 的 GUC，必须用 -c timezone 覆盖，
+    # 这样 func.now() 写入(naive)的 created_at 即为中国本地时间(CST)。
+    command: ["postgres", "-c", "timezone=Asia/Shanghai", "-c", "log_timezone=Asia/Shanghai"]
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-testplatform}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
+      POSTGRES_DB: ${POSTGRES_DB:-test_platform}
+      TZ: ${TZ:-Asia/Shanghai}
+      PGTZ: ${TZ:-Asia/Shanghai}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-testplatform} -d ${POSTGRES_DB:-test_platform}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: tp_redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    container_name: tp_backend
+    restart: unless-stopped
+    env_file:
+      - ./backend/.env
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-testplatform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-test_platform}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the root .env file}
+      DEFAULT_ADMIN_USERNAME: ${DEFAULT_ADMIN_USERNAME:-admin}
+      DEFAULT_ADMIN_PASSWORD: ${DEFAULT_ADMIN_PASSWORD:?Set DEFAULT_ADMIN_PASSWORD in the root .env file}
+      FRAMEWORK_ROOT: /opt/framework
+      INTERFACE_FRAMEWORK_ROOT: /opt/framework-inter
+      TZ: ${TZ:-Asia/Shanghai}
+      FRAMEWORK_PYTHON: /app/fw-venv/bin/python   # 框架登录子进程用的独立 venv(装框架依赖 appium 等)
+    volumes:
+      - ${WEB_FRAMEWORK_PATH:-./frameworks/web}:/opt/framework
+      - ${API_FRAMEWORK_PATH:-./frameworks/api}:/opt/framework-inter
+      - backend_uploads:/app/uploads
+      - backend_login:/app/login_states
+      - backend_logintmp:/app/login_tmp
+      - ${WORKER_DIST_PATH:-./worker-dist}:/app/worker-dist
+      - ${FRAMEWORK_VENV_PATH:-./fw-venv}:/app/fw-venv
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: tp_frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  pgdata:
+  backend_uploads:
+  backend_login:
+  backend_logintmp:

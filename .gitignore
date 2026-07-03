@@ -1,0 +1,90 @@
+# Dependencies
+node_modules/
+frontend/node_modules/
+
+# Build output
+frontend/dist/
+frontend/.vite/
+*.egg-info/
+dist/
+build/
+# worker exe 打包产物(adb 下载缓存 + UPX + PyInstaller spec)，不入库
+deploy/worker/platform-tools/
+deploy/worker/upx/
+*.spec
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+ENV/
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Local database
+*.db
+
+# Logs
+*.log
+logs/
+
+# IDE & OS
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Local tooling
+.claude/
+
+# Local dev seed / demo helpers (not part of the platform)
+backend/run_demo.py
+backend/seed_pg.py
+backend/seed_extra_defects.py
+backend/app/seed_demo_data.py
+
+# Accidental files
+=0.17.0
+
+*.pdf
+# 本地演示 SQLite (run_demo.py)
+backend/_demo.db
+
+# PC web 登录态(含 cookie/session，敏感，绝不提交)
+backend/login_states/
+login_states/
+# 临时账号登录态(执行用完即删，也不入库)
+backend/login_tmp/
+login_tmp/
+
+# 上传文件、抓图、playwright-mcp 缓存
+backend/uploads/
+.playwright-mcp/
+
+# External frameworks and worker artifacts
+frameworks/
+worker-dist/
+fw-venv/
+tp-worker.json
+*.apk
+*.aab
+*.ipa
+
+# 机密：用户 AI key 映射，禁止提交
+ai-key-mapping.csv
+backend/_delbad.py

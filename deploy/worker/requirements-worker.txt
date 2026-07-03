@@ -1,0 +1,7 @@
+# 执行机 worker 运行所需 Python 依赖（在插真机的执行机上 pip install）
+# 若 import 仍报缺包，可直接 pip install -r ../../backend/requirements.txt（全量，更稳但更重）
+uiautomator2
+pillow
+httpx
+pydantic
+pydantic-settings

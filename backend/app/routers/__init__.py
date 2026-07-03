@@ -1,0 +1,15 @@
+from .projects import router as projects_router
+from .requirements import router as requirements_router
+from .testcases import router as testcases_router
+from .executions import router as executions_router
+from .pipeline import router as pipeline_router
+from .enums import router as enums_router
+from .dashboard import router as dashboard_router
+from .cicd import router as cicd_router
+from .defects import router as defects_router
+from .page_cache import router as page_cache_router
+from .auth import router as auth_router
+from .users import router as users_router
+from .system_settings import router as system_settings_router
+from .frameworks import router as frameworks_router
+from .worker import router as worker_router
