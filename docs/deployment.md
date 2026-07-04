@@ -1,8 +1,13 @@
 # 生产部署
 
+This document describes the recommended deployment approach for the open-source edition in controlled server or shared-network environments.
+
 ## 建议拓扑
 
 将 Nginx/前端、FastAPI、PostgreSQL 和 Redis 部署在受控网络；Android worker 或 Sonic Agent 通过内网访问平台。公网入口只暴露 HTTPS。
+
+English note:
+Deploy Nginx/frontend, FastAPI, PostgreSQL, and Redis inside a controlled network. Android workers or Sonic agents should access the platform over the internal network, and only HTTPS should be exposed publicly.
 
 ## 部署步骤
 
@@ -13,10 +18,25 @@
 5. 检查 `/api/health` 或 `/health`、容器状态和迁移日志。
 6. 登录后立即验证管理员账号，并按需配置 AI、枚举和外部系统。
 
+English deployment steps:
+
+1. Prepare a dedicated deployment user and directory.
+2. Copy `.env.example` and `backend/.env.example`, then replace all example secrets.
+3. Configure the domain, TLS, and reverse proxy.
+4. Run `docker compose -f docker-compose.prod.yml up -d --build`.
+5. Check health endpoints, container status, and migration logs.
+6. Sign in and verify admin access before configuring AI and integrations.
+
 ## 更新
 
 更新前备份 PostgreSQL 和上传卷。可以使用 `deploy/update.py`，但必须显式设置 `DEPLOY_HOST`；脚本不会上传本地 `.env`。
 
+English note:
+Back up PostgreSQL and upload volumes before every update. If you use `deploy/update.py`, set `DEPLOY_HOST` explicitly. The script does not upload your local `.env`.
+
 ## 备份
 
 至少备份 PostgreSQL、`backend_uploads`、登录态卷和 worker 制品目录。登录态含 Cookie，应加密存储并限制访问。
+
+English note:
+At minimum, back up PostgreSQL, `backend_uploads`, session-related volumes, and worker artifact directories. Session data may include cookies and should be encrypted and access-controlled.
