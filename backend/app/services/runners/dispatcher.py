@@ -7,18 +7,21 @@ from __future__ import annotations
 
 from typing import Any
 
-# 业务端 → 执行口径分组（与前端 ExecConfigModal.PLATFORM_GROUP 保持一致）
-_PLATFORM_GROUP = {
-    "web-admin": "pc", "web-portal": "pc",
-    "android-app": "app", "ios-app": "app",
-    "mini-app": "miniprogram",
-    "api": "api", "backend_api": "api",
+# 兼容通用/历史平台标识；业务自定义端优先走枚举 platform.parent_key 注入。
+_GENERIC_PLATFORM_GROUP = {
+    "api": "api",
+    "backend_api": "api",
+    "接口": "api",
     # 兼容旧执行口径标识
-    "web": "pc", "android": "app", "ios": "app", "harmony": "app", "miniprogram": "miniprogram",
+    "web": "pc",
+    "android": "app",
+    "ios": "app",
+    "harmony": "app",
+    "miniprogram": "miniprogram",
 }
 
 
-def resolve_runner_type(case: Any) -> str:
+def resolve_runner_type(case: Any, platform_group_map: dict[str, str] | None = None) -> str:
     """返回 api/web/android/miniprogram 之一。
 
     口径与前端 categorizeCaseByPlatform 一致：
@@ -29,7 +32,10 @@ def resolve_runner_type(case: Any) -> str:
     """
     case_type = getattr(case, "case_type", None)
     platforms = getattr(case, "platforms", None) or []
-    groups = [_PLATFORM_GROUP.get(p) for p in platforms if _PLATFORM_GROUP.get(p)]
+    group_map = dict(_GENERIC_PLATFORM_GROUP)
+    if platform_group_map:
+        group_map.update(platform_group_map)
+    groups = [group_map.get(p) for p in platforms if group_map.get(p)]
 
     if case_type == "api" or "api" in groups or "backend_api" in platforms:
         return "api"

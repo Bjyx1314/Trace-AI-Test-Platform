@@ -26,6 +26,29 @@ _VIEWPORT = {"width": 1440, "height": 900}
 _WEB_SEND_W = 1280
 
 
+async def _wait_for_page_ready(page, timeout_ms: int = 6000) -> None:
+    """等待新页基础可用，避免刚切过去就截图到空白页/中间态。"""
+    try:
+        await page.wait_for_load_state("domcontentloaded", timeout=timeout_ms)
+    except Exception:
+        pass
+    try:
+        await page.wait_for_load_state("networkidle", timeout=timeout_ms)
+    except Exception:
+        pass
+
+
+def _pick_latest_page(current_page, pages: list[Any]) -> Any:
+    """从 context.pages 中挑选最新可用页；没有更合适的就保留当前页。"""
+    for cand in reversed(pages or []):
+        try:
+            if cand != current_page and not cand.is_closed():
+                return cand
+        except Exception:
+            continue
+    return current_page
+
+
 def _encode_web(img) -> tuple[str, int, int, bytes]:
     """按 _WEB_SEND_W 等比缩放并编码为 JPEG(返回 b64, 宽, 高, 原始bytes)。
     与 android 的 _encode 同签名，AI 坐标按 scale=dev/宽 还原回真实视口。"""
@@ -136,6 +159,32 @@ class WebAgentRunner(BaseRunner):
                 context = await browser.new_context(viewport=_VIEWPORT,
                                                     storage_state=ctx.extra.get("storage_state") if ctx.extra else None)
                 page = await context.new_page()
+                popup_queue: asyncio.Queue[Any] = asyncio.Queue()
+
+                def _watch_page(_page):
+                    return None
+
+                def _on_popup(new_page):
+                    try:
+                        popup_queue.put_nowait(new_page)
+                    except Exception:
+                        pass
+
+                def _bind_popup_watch(p):
+                    try:
+                        p.on("popup", _on_popup)
+                    except Exception:
+                        pass
+
+                def _watch_active_page(p):
+                    _watch_page(p)
+                    _bind_popup_watch(p)
+
+                _watch_active_page(page)
+                try:
+                    context.on("page", _on_popup)
+                except Exception:
+                    pass
 
                 async def _settle():
                     """等页面加载稳定后再截图，避免数据未加载完就误判(如列表'共0条'其实在加载中)。"""
@@ -151,6 +200,34 @@ class WebAgentRunner(BaseRunner):
                         )
                     except Exception:
                         pass
+
+                async def _adopt_new_page() -> str | None:
+                    nonlocal page
+                    cand = None
+                    while not popup_queue.empty():
+                        try:
+                            cand = popup_queue.get_nowait()
+                        except asyncio.QueueEmpty:
+                            break
+                    if cand is None:
+                        cand = _pick_latest_page(page, list(getattr(context, "pages", []) or []))
+                        if cand == page:
+                            return None
+                    try:
+                        await _wait_for_page_ready(cand)
+                    except Exception:
+                        pass
+                    page = cand
+                    _watch_active_page(page)
+                    try:
+                        await page.bring_to_front()
+                    except Exception:
+                        pass
+                    try:
+                        cur_title = await page.title()
+                    except Exception:
+                        cur_title = ""
+                    return f"切换到新页面：{(cur_title or page.url or '未命名页面')[:120]}"
 
                 async def _capture():
                     """抓当前页面的交互元素结构(按 url 去重)，供执行后写入页面结构缓存。"""
@@ -363,7 +440,14 @@ class WebAgentRunner(BaseRunner):
                                 await asyncio.sleep(1.5)
                                 desc = "等待加载"
                             else:
-                                desc = f"未知动作 {a}"
+                                await asyncio.sleep(1.0)
+                                desc = "未取到有效动作，重试" if not a else f"未知动作 {a}"
+                            try:
+                                switched = await asyncio.wait_for(_adopt_new_page(), timeout=2.5)
+                            except Exception:
+                                switched = None
+                            if switched:
+                                desc = f"{desc}；{switched}"
                             notes.append(desc)
                             await asyncio.sleep(1.0)
                         except Exception as e:

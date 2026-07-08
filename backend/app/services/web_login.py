@@ -265,7 +265,8 @@ async def ensure_login_state(platform: str, role: str = "default") -> Optional[s
 
 
 async def login_temp(platform: str, username: str, password: str,
-                     out_path: str, tenant_name: Optional[str] = None) -> bool:
+                     out_path: str, tenant_name: Optional[str] = None,
+                     base_url: Optional[str] = None) -> bool:
     """用「临时账号」登录并把 storageState 存到 out_path(临时文件，用完即弃)。
 
     复用配置的外部框架登录流程，但【绝不写入框架配置/状态目录】，
@@ -273,7 +274,7 @@ async def login_temp(platform: str, username: str, password: str,
     """
     fw = _PLATFORM_TO_FRAMEWORK.get(platform)
     if not fw or not _framework_available():
-        return False
+        return await _login_temp_generic(base_url, username, password, out_path, tenant_name)
     try:
         _, _, base_url, _ = _framework_meta(fw["project"], fw["web"], "default")
     except Exception:

@@ -112,3 +112,59 @@ def test_run_execution_real_api(pg_session):
                 await db.commit()
 
     asyncio.run(_scenario())
+
+
+def test_should_force_sonic_runner_only_for_android_cases():
+    from app.services.execution_runner import _should_force_sonic_runner
+
+    class _Case:
+        def __init__(self, case_type="ui", platforms=None):
+            self.case_type = case_type
+            self.platforms = platforms or []
+
+    app_group_map = {"商户CRM": "app"}
+    assert _should_force_sonic_runner(_Case(platforms=["商户CRM"]), "sonic:abc123", app_group_map) is True
+    assert _should_force_sonic_runner(_Case(case_type="api", platforms=["接口"]), "sonic:abc123") is False
+    assert _should_force_sonic_runner(_Case(case_type="ui", platforms=["web"]), "sonic:abc123") is False
+    assert _should_force_sonic_runner(_Case(platforms=["商户CRM"]), None, app_group_map) is False
+
+
+def test_is_api_case_accepts_interface_platform_tag():
+    from app.services.execution_runner import _is_api_case
+
+    class _Case:
+        def __init__(self, case_type="功能", platforms=None):
+            self.case_type = case_type
+            self.platforms = platforms or []
+
+    assert _is_api_case(_Case(platforms=["接口"])) is True
+    assert _is_api_case(_Case(platforms=["backend_api"])) is True
+    assert _is_api_case(_Case(platforms=["自定义接口端"]), {"自定义接口端": "api"}) is True
+    assert _is_api_case(_Case(platforms=["android"])) is False
+
+
+def test_resolve_case_runner_type_reads_platform_parent_key_map():
+    from app.services.execution_runner import _resolve_case_runner_type
+
+    class _Case:
+        def __init__(self, case_type="ui", platforms=None):
+            self.case_type = case_type
+            self.platforms = platforms or []
+
+    group_map = {"商户CRM": "app", "商APP": "app", "帕拉丁": "pc"}
+    assert _resolve_case_runner_type(_Case(platforms=["商户CRM"]), group_map) == "android"
+    assert _resolve_case_runner_type(_Case(platforms=["商APP"]), group_map) == "android"
+    assert _resolve_case_runner_type(_Case(platforms=["帕拉丁"]), group_map) == "web"
+
+
+def test_misrouted_app_platforms_blocks_web_fallback():
+    from app.services.execution_runner import _misrouted_app_platforms
+
+    class _Case:
+        def __init__(self, platforms=None):
+            self.platforms = platforms or []
+
+    group_map = {"商户CRM": "app", "帕拉丁": "pc"}
+    assert _misrouted_app_platforms(_Case(platforms=["商户CRM"]), group_map, "web") == ["商户CRM"]
+    assert _misrouted_app_platforms(_Case(platforms=["帕拉丁"]), group_map, "web") == []
+    assert _misrouted_app_platforms(_Case(platforms=["商户CRM"]), group_map, "android") == []

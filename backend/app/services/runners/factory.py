@@ -61,7 +61,7 @@ def _get_cfg():
     return settings
 
 
-def build_runner(case: Any, cfg: Any = None) -> BaseRunner:
+def build_runner(case: Any, cfg: Any = None, platform_group_map: dict[str, str] | None = None) -> BaseRunner:
     """根据用例与配置返回应使用的 Runner 实例。
 
     回退到 MockRunner 的条件（任一）：
@@ -74,7 +74,7 @@ def build_runner(case: Any, cfg: Any = None) -> BaseRunner:
     if getattr(cfg, "execution_mode", "mock") != "real":
         return _fallback("执行引擎未启用真实执行(execution_mode≠real)", cfg)
 
-    runner_type = resolve_runner_type(case)
+    runner_type = resolve_runner_type(case, platform_group_map)
 
     flag_attr = _ENABLE_FLAG.get(runner_type)
     if not flag_attr or not getattr(cfg, flag_attr, False):
