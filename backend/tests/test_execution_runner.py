@@ -122,11 +122,11 @@ def test_should_force_sonic_runner_only_for_android_cases():
             self.case_type = case_type
             self.platforms = platforms or []
 
-    app_group_map = {"商户CRM": "app"}
-    assert _should_force_sonic_runner(_Case(platforms=["商户CRM"]), "sonic:abc123", app_group_map) is True
+    app_group_map = {"mobile-app-a": "app"}
+    assert _should_force_sonic_runner(_Case(platforms=["mobile-app-a"]), "sonic:abc123", app_group_map) is True
     assert _should_force_sonic_runner(_Case(case_type="api", platforms=["接口"]), "sonic:abc123") is False
     assert _should_force_sonic_runner(_Case(case_type="ui", platforms=["web"]), "sonic:abc123") is False
-    assert _should_force_sonic_runner(_Case(platforms=["商户CRM"]), None, app_group_map) is False
+    assert _should_force_sonic_runner(_Case(platforms=["mobile-app-a"]), None, app_group_map) is False
 
 
 def test_is_api_case_accepts_interface_platform_tag():
@@ -151,10 +151,10 @@ def test_resolve_case_runner_type_reads_platform_parent_key_map():
             self.case_type = case_type
             self.platforms = platforms or []
 
-    group_map = {"商户CRM": "app", "商APP": "app", "帕拉丁": "pc"}
-    assert _resolve_case_runner_type(_Case(platforms=["商户CRM"]), group_map) == "android"
-    assert _resolve_case_runner_type(_Case(platforms=["商APP"]), group_map) == "android"
-    assert _resolve_case_runner_type(_Case(platforms=["帕拉丁"]), group_map) == "web"
+    group_map = {"mobile-app-a": "app", "mobile-app-b": "app", "web-portal-a": "pc"}
+    assert _resolve_case_runner_type(_Case(platforms=["mobile-app-a"]), group_map) == "android"
+    assert _resolve_case_runner_type(_Case(platforms=["mobile-app-b"]), group_map) == "android"
+    assert _resolve_case_runner_type(_Case(platforms=["web-portal-a"]), group_map) == "web"
 
 
 def test_misrouted_app_platforms_blocks_web_fallback():
@@ -164,7 +164,7 @@ def test_misrouted_app_platforms_blocks_web_fallback():
         def __init__(self, platforms=None):
             self.platforms = platforms or []
 
-    group_map = {"商户CRM": "app", "帕拉丁": "pc"}
-    assert _misrouted_app_platforms(_Case(platforms=["商户CRM"]), group_map, "web") == ["商户CRM"]
-    assert _misrouted_app_platforms(_Case(platforms=["帕拉丁"]), group_map, "web") == []
-    assert _misrouted_app_platforms(_Case(platforms=["商户CRM"]), group_map, "android") == []
+    group_map = {"mobile-app-a": "app", "web-portal-a": "pc"}
+    assert _misrouted_app_platforms(_Case(platforms=["mobile-app-a"]), group_map, "web") == ["mobile-app-a"]
+    assert _misrouted_app_platforms(_Case(platforms=["web-portal-a"]), group_map, "web") == []
+    assert _misrouted_app_platforms(_Case(platforms=["mobile-app-a"]), group_map, "android") == []
