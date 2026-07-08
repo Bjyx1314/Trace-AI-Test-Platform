@@ -50,6 +50,14 @@ TraceAI is an AI-assisted quality collaboration and validation platform for team
 - 可选飞书、外部 SSO/任务系统和外部自动化框架集成
 - 枚举驱动的产品线、模块、端和环境地址配置
 
+## 执行补充说明
+
+- 接口执行支持按结构化用例中的 `tags.api_spec.service` 或 `tags.api_spec.base_url` 解析目标环境地址，便于复用外部接口框架维护的域名配置。
+- 执行路由支持按平台枚举的 `parent_key` 判定 `api`、`web`、`app` 等执行口径，减少依赖历史写死端名。
+- App 用例如果被误分到 PC/Web，会直接报错并阻止兜底执行，避免把结果落到错误站点。
+- PC Web AI 执行支持点击后自动接管新开的标签页或窗口，适配 CRM/报表类系统常见的新开页场景。
+- Web 临时账号登录支持透传当前环境地址；当外部框架未覆盖某个端时，可降级到通用账密登录流程。
+
 ## 核心模块
 
 | 模块 | 作用 |

@@ -46,6 +46,14 @@ TraceAI is an AI-assisted quality collaboration and validation platform for team
 - Optional Feishu, external SSO/task system, and external automation framework integrations
 - Enum-driven product line, module, platform, and environment URL configuration
 
+## Execution Notes
+
+- API execution can resolve target environments from structured case metadata such as `tags.api_spec.service` or `tags.api_spec.base_url`, which helps reuse host mappings maintained by external API frameworks.
+- Execution routing can follow platform enum `parent_key` values instead of relying only on historical hard-coded platform names.
+- If an App case is misclassified into PC/Web, the runner stops with an explicit error instead of falling back to the wrong site.
+- The desktop Web AI runner can now adopt newly opened tabs or windows after a click, which is useful for CRM and reporting systems that commonly open new pages.
+- Temporary Web login can receive the current environment base URL, and when no external framework mapping exists for a platform, it can fall back to a generic username/password login flow.
+
 ## Core Modules
 
 | Module | Purpose |
