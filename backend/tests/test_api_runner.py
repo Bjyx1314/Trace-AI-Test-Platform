@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services.runners.api_runner import ApiRunner  # noqa: E402
+from app.services.runners.api_runner import ApiRunner, _eval_assert  # noqa: E402
 from app.services.runners.base import RunContext  # noqa: E402
 
 
@@ -58,3 +58,23 @@ def test_api_runner_platform_and_no_device():
     runner = ApiRunner()
     assert runner.platform == "api"
     assert runner.requires_device is False
+
+
+def test_body_contains_success_accepts_common_success_payload():
+    ok, msg = _eval_assert(
+        {"type": "body_contains", "value": "success"},
+        200,
+        {"errCode": "0", "message": "请求成功", "data": {"foo": "bar"}},
+    )
+    assert ok is True
+    assert msg == ""
+
+
+def test_body_contains_non_success_still_requires_literal_match():
+    ok, msg = _eval_assert(
+        {"type": "body_contains", "value": "agreementSigned"},
+        200,
+        {"errCode": "0", "message": "请求成功", "data": {"signedStatus": "NO"}},
+    )
+    assert ok is False
+    assert "响应未包含" in msg

@@ -33,16 +33,14 @@ class _UnavailableRunner(BaseRunner):
 
 
 def _fallback(reason: str, cfg: Any) -> BaseRunner:
-    """未就绪端的回退：本地用 MockRunner(假执行)；服务器真实环境用 UnavailableRunner(报错)。"""
-    if getattr(cfg, "mock_allowed", False):
-        return MockRunner()
-    return _UnavailableRunner(reason)
+    """未就绪端的回退：开源版默认用 MockRunner，保证流程可演示、可验证。"""
+    return MockRunner()
 
 # 已实现真实执行的 Runner（其余端在 P5 逐个补充后登记到这里）
 _IMPLEMENTED: dict[str, type[BaseRunner]] = {
     "api": ApiRunner,
     "web": WebAgentRunner,             # AI 视觉驱动浏览器执行 PC web 用例
-    "android": WorkerDispatchRunner,   # 派发给执行机 worker，worker 端用 AndroidAgentRunner 真连真机
+    # Android 真机执行由 worker 侧实现，开源版平台侧默认不启用真实 runner。
 }
 
 # 各端开关在 settings 上的属性名

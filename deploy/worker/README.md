@@ -1,4 +1,4 @@
-# App 真机执行机 worker
+﻿# App 真机执行机 worker
 
 把 App 真机执行放到「插着真机的执行机」本地完成（USB 直连、AI 视觉、稳），主动连平台领任务、回传结果。
 **Windows 与 macOS 均支持**（同一份 worker.py，adb 解析、开机自启按系统自适应）。未来可平滑演进为 Sonic-agent。
@@ -7,7 +7,7 @@
 - 安卓真机：开「开发者模式 + USB 调试」，USB 接到执行机，授权调试。
 - 装 **adb**（Android platform-tools），`adb devices` 能看到设备（status=device）。exe/二进制版已内置 adb，可免装。
 - 装 **Python 3.10+**（仅脚本方式需要；下载打包版免装）。
-- 能访问平台地址（如 `http://localhost:8000`）和配置的 AI 服务地址。
+- 能访问：平台地址（如 `http://127.0.0.1`）、AI 中转地址（与平台一致）。
 
 ## 推荐：从平台「连接我的真机」下载打包版（免装环境）
 平台执行弹框 → 移动端「连接真机」→「连接我的真机」。页面会**按你所在系统**给出对应的执行助手与首次启动命令：
@@ -38,7 +38,7 @@ python3 -m pip install -r deploy/worker/requirements-worker.txt
 python3 deploy/worker/worker.py
 ```
 **AI 配置无需手填**：worker 启动时自动读取本机 `backend/.env` 里的 `AI_*`（复用平台同一套 AI），
-`WORKER_ID` 默认取机器名，`PLATFORM_URL` 默认指向 `http://localhost:8000`。
+`WORKER_ID` 默认取机器名，`PLATFORM_URL` 默认指生产 `http://127.0.0.1`。
 （首次 uiautomator2 会给手机装 atx-agent，保持 USB 连接、手机点允许。）
 
 ## 零配置原理 & 可选覆盖
@@ -49,7 +49,7 @@ python3 deploy/worker/worker.py
 | `AI_PROVIDER/AI_API_KEY/AI_BASE_URL/AI_MODEL` | **自动**读 backend/.env | 各执行机用各自本地 AI 配置 |
 | `WORKER_TOKEN` | 读 backend/.env | 平台 worker 令牌（首次由安装脚本写入） |
 | `WORKER_ID` | **机器名** hostname | 多执行机自然不同 |
-| `PLATFORM_URL` | `http://localhost:8000` | 平台地址 |
+| `PLATFORM_URL` | `http://127.0.0.1` | 平台地址 |
 | `WORKER_NAME` | =WORKER_ID | 显示名 |
 | `WORKER_SHARED` | `false` | `true`=本机设备作公共/默认设备，没装 worker 的人兜底走它 |
 

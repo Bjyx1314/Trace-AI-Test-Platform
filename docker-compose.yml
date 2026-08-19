@@ -1,18 +1,19 @@
+version: "3.8"
 services:
   postgres:
-    image: postgres:16
+    image: pgvector/pgvector:pg16  # postgres:16 + pgvector 扩展（volume 兼容，用于经验/覆盖项语义检索）
     container_name: test_platform_pg
     restart: unless-stopped
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-testplatform}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the root .env file}
-      POSTGRES_DB: ${POSTGRES_DB:-test_platform}
+      POSTGRES_USER: testplatform
+      POSTGRES_PASSWORD: testplatform_dev_pwd
+      POSTGRES_DB: test_platform
     ports:
       - "5432:5432"
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-testplatform} -d ${POSTGRES_DB:-test_platform}"]
+      test: ["CMD-SHELL", "pg_isready -U testplatform -d test_platform"]
       interval: 5s
       timeout: 5s
       retries: 5

@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+﻿import type { CSSProperties } from 'react'
 
 // ─── 枚举标签配色系统 ────────────────────────────────────────────────
 // 8 色调色板循环 + 端固定映射 + 优先级状态色 + 缺陷等级色。不再用固定灰色。
@@ -30,7 +30,11 @@ export const paletteTagStyle = (i: number): CSSProperties => styleOf(TAG_PALETTE
 
 // 端：固定调色板映射；接口/api 用灰
 const PLATFORM_PALETTE_INDEX: Record<string, number> = {
-  'web-admin': 0, 'web-portal': 1, 'android-app': 2, 'ios-app': 3, 'mini-app': 4,
+  'web-admin': 0,
+  'web-portal': 1,
+  'android-app': 2,
+  'ios-app': 3,
+  'mini-app': 4,
 }
 export function platformTagStyle(key: string): CSSProperties {
   if (key === 'api' || key === '接口') return grayTagStyle()

@@ -5,6 +5,7 @@ import { dashboardApi, projectsApi, enumsApi } from '../api'
 import { useProjectStore } from '../store/projectStore'
 import { useAuthStore } from '../store/authStore'
 import { PANEL_CARD_STYLE, MONO_FONT } from '../styles/theme'
+import QualityLoopMetrics from '../components/QualityLoopMetrics'
 import GateTag, { toGateState } from '../components/GateTag'
 
 // 缺陷等级配色（按枚举顺序：由重到轻）
@@ -66,25 +67,26 @@ export default function Dashboard() {
 
   useEffect(() => {
     if (activeTab === 'my' && !effectiveProjectId) return
-    dashboardApi.requirementsQuality({ project_id: effectiveProjectId }).then((r) => {
+    dashboardApi.requirementsQuality({ project_id: effectiveProjectId, mine: activeTab === 'my' }).then((r) => {
       const iters = [...new Set(r.data.requirements.map((req: any) => req.iteration).filter(Boolean))] as string[]
       setIterationOptions(iters)
       const ownerSet = new Set<string>()
       r.data.requirements.forEach((req: any) => {
         if (req.owner_name) ownerSet.add(req.owner_name)
+        ;(req.participant_names || []).forEach((n: string) => { if (n) ownerSet.add(n) })
         ;(req.slices || []).forEach((s: any) => { if (s.owner_name) ownerSet.add(s.owner_name) })
       })
       setOwnerOptions([...ownerSet])
     })
-  }, [effectiveProjectId]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [effectiveProjectId, activeTab]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (activeTab === 'my' && !effectiveProjectId) return
     setReqLoading(true)
-    dashboardApi.requirementsQuality({ project_id: effectiveProjectId, iteration: iterationFilter, status: statusFilter, owner: ownerFilter })
+    dashboardApi.requirementsQuality({ project_id: effectiveProjectId, iteration: iterationFilter, status: statusFilter, owner: ownerFilter, mine: activeTab === 'my' })
       .then((r) => { setReqQuality(r.data.requirements || []); setQualitySummary(r.data.summary || null) })
       .finally(() => setReqLoading(false))
-  }, [effectiveProjectId, iterationFilter, statusFilter, ownerFilter]) // eslint-disable-line react-hooks/exhaustive-deps
+  }, [effectiveProjectId, iterationFilter, statusFilter, ownerFilter, activeTab]) // eslint-disable-line react-hooks/exhaustive-deps
 
   if (!currentProject && activeTab === 'my' && !projectFilter) {
     return <Empty description="请先选择项目" style={{ marginTop: 80 }} />
@@ -335,6 +337,9 @@ export default function Dashboard() {
             ))}
           </div>
         </div>
+
+        {/* 质量闭环指标：仅管理员 + 全部需求 tab，放页面最下方 */}
+        {isAdmin && activeTab === 'all' && <QualityLoopMetrics projectId={effectiveProjectId} />}
       </Spin>
     </div>
   )

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Modal, Form, Input, Select, message } from 'antd'
 import { enumsApi } from '../api'
 import type { UrlMatrix } from '../api'
@@ -6,7 +6,7 @@ import { confirmDialog } from '../components/ConfirmModal'
 import dayjs from 'dayjs'
 
 // base_url(pc端地址) 与 app_package(应用包名) 不单列：合并进「端」——见端配置表。
-const CATEGORIES = ['priority', 'category', 'severity', 'product_line', 'module', 'platform']
+const CATEGORIES = ['priority', 'category', 'severity', 'product_line', 'module', 'platform', 'app_env']
 
 const CATEGORY_META: Record<string, { label: string; icon: string; desc: string }> = {
   priority: { label: '用例优先级', icon: 'flag', desc: '用例执行的优先级（P0/P1…）' },
@@ -15,6 +15,7 @@ const CATEGORY_META: Record<string, { label: string; icon: string; desc: string 
   product_line: { label: '研发领域', icon: 'hub', desc: '产品线 / 研发领域划分' },
   module: { label: '功能模块', icon: 'widgets', desc: '功能模块划分' },
   platform: { label: '端', icon: 'devices', desc: '端 · 执行口径 · 地址 · 应用包名' },
+  app_env: { label: 'App执行环境', icon: 'smartphone', desc: 'App 自动登录选环境（label 即 app 内环境名）' },
 }
 const CATEGORY_LABEL: Record<string, string> = Object.fromEntries(
   Object.entries(CATEGORY_META).map(([k, v]) => [k, v.label]),
@@ -157,21 +158,30 @@ export default function EnumManagement() {
 
   const [pkgOpen, setPkgOpen] = useState(false)
   const [pkgEditing, setPkgEditing] = useState<{ id: string } | null>(null)
-  const [pkgForm] = Form.useForm()
+  const [pkgPlatform, setPkgPlatform] = useState('')   // 正在编辑的端 key
+  const [pkgValue, setPkgValue] = useState('')         // 应用包名输入值
+  const [pkgSaving, setPkgSaving] = useState(false)
+  // 受控输入(不走 antd Form)：避免 destroyOnClose + 预挂载 setFieldsValue 丢值导致保存失败
   const openPkg = (init: { platform_key: string; id?: string; pkg?: string }) => {
     setPkgEditing(init.id ? { id: init.id } : null)
-    pkgForm.setFieldsValue({ platform_key: init.platform_key, pkg: init.pkg || '' })
+    setPkgPlatform(init.platform_key)
+    setPkgValue(init.pkg || '')
     setPkgOpen(true)
   }
-  const submitPkg = async (values: any) => {
-    const payload = { category: 'app_package', key: values.platform_key, label: (values.pkg || '').trim() }
-    if (pkgEditing) await enumsApi.update(pkgEditing.id, payload as any)
-    else await enumsApi.create(payload as any)
-    message.success(pkgEditing ? '已更新' : '已保存'); setPkgOpen(false); loadAll()
-  }
-  const deletePkg = async () => {
-    if (!pkgEditing) return
-    await enumsApi.delete(pkgEditing.id); message.success('已删除'); setPkgOpen(false); loadAll()
+  const submitPkg = async () => {
+    const pkg = pkgValue.trim()
+    if (!pkg) { message.warning('请填写应用包名'); return }
+    setPkgSaving(true)
+    try {
+      const payload = { category: 'app_package', key: pkgPlatform, label: pkg }
+      if (pkgEditing) await enumsApi.update(pkgEditing.id, payload as any)
+      else await enumsApi.create(payload as any)
+      message.success(pkgEditing ? '已更新' : '已保存'); setPkgOpen(false); loadAll()
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '保存失败，请重试')
+    } finally {
+      setPkgSaving(false)
+    }
   }
 
   // ── 操作记录抽屉 ───────────────────────────────────────────────────────
@@ -353,7 +363,7 @@ export default function EnumManagement() {
             <Select options={CATEGORIES.map((c) => ({ value: c, label: CATEGORY_META[c].label }))} />
           </Form.Item>
           <Form.Item name="label" label="枚举值" rules={[{ required: true }]}>
-            <Input placeholder="如 P0 / android-app / 登录模块" />
+            <Input placeholder="如 P0 / 移动 App / 登录模块" />
           </Form.Item>
           <Form.Item noStyle shouldUpdate={(a, b) => a.category !== b.category}>
             {() => form.getFieldValue('category') === 'platform' ? (
@@ -381,20 +391,18 @@ export default function EnumManagement() {
         </Form>
       </Modal>
 
-      {/* 应用包名弹窗 */}
+      {/* 应用包名弹窗：受控输入，仅「取消 / 保存」两个按钮 */}
       <Modal title={pkgEditing ? '编辑应用包名' : '配置应用包名'} open={pkgOpen} onCancel={() => setPkgOpen(false)}
-        onOk={() => pkgForm.submit()} destroyOnClose
-        footer={pkgEditing ? [
-          <button key="d" className="em-mbtn danger" onClick={async () => { if (await confirmDialog({ title: '删除包名', desc: '确认删除该端的应用包名？', ok: '删除', danger: true })) deletePkg() }}>删除</button>,
-          <button key="c" className="em-mbtn" onClick={() => setPkgOpen(false)}>取消</button>,
-          <button key="o" className="em-mbtn primary" onClick={() => pkgForm.submit()}>保存</button>,
-        ] : undefined}>
-        <Form form={pkgForm} layout="vertical" onFinish={submitPkg} style={{ marginTop: 8 }}>
-          <Form.Item name="platform_key" label="端"><Input disabled /></Form.Item>
-          <Form.Item name="pkg" label="应用包名（android package）" rules={[{ required: true, message: '请填写应用包名' }]}>
-            <Input placeholder="如 com.example.app" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }} />
-          </Form.Item>
-        </Form>
+        onOk={submitPkg} okText="保存" cancelText="取消" okButtonProps={{ loading: pkgSaving }} destroyOnClose>
+        <div style={{ marginTop: 8 }}>
+          <div style={{ fontSize: 13, color: '#6a7180', marginBottom: 6 }}>端</div>
+          <Input value={pkgPlatform} disabled style={{ marginBottom: 14 }} />
+          <div style={{ fontSize: 13, color: '#6a7180', marginBottom: 6 }}>
+            应用包名（android package）<span style={{ color: '#d4380d' }}> *</span>
+          </div>
+          <Input value={pkgValue} onChange={(e) => setPkgValue(e.target.value)} onPressEnter={submitPkg}
+            placeholder="如 com.example.module" style={{ fontFamily: 'ui-monospace, Menlo, monospace' }} autoFocus />
+        </div>
       </Modal>
     </div>
   )

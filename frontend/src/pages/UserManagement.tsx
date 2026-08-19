@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Table, Tag, message, Card, Button, Modal, Form, Input, Select } from 'antd'
 import { confirmDialog } from '../components/ConfirmModal'
 import { usersApi } from '../api'
@@ -80,7 +80,7 @@ export default function UserManagement() {
     { title: '姓名', dataIndex: 'name', key: 'name', width: 130, render: (v: string) => v || '—' },
     {
       title: '来源', dataIndex: 'auth_source', key: 'auth_source', width: 120,
-      render: (v: string) => <Tag color={v === 'local' ? 'blue' : 'default'}>{v === 'local' ? '本地账号' : '外部 SSO'}</Tag>,
+      render: (v: string) => <Tag color={v === 'local' ? 'blue' : 'default'}>{v === 'local' ? '本地账号' : 'external task system'}</Tag>,
     },
     {
       title: '状态', dataIndex: 'is_active', key: 'is_active', width: 90,

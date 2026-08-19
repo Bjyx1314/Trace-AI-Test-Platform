@@ -1,4 +1,4 @@
-"""add external_ticket_id/url to defects (external tracker sync)
+﻿"""add external_ticket_id/url to defects (external task system 建单回填)
 
 Revision ID: d2e3f4a5b6c7
 Revises: c1d2e3f4a5b6

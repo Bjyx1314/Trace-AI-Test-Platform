@@ -16,6 +16,10 @@ from app.agents.llm import get_provider, provider_needs_key, _resolved_key
 
 logger = logging.getLogger(__name__)
 
+# 兼容旧引用（个别处可能 import MODEL）；真实模型由 provider 按配置决定
+MODEL = "claude-sonnet-4-6"
+
+
 class BaseAgent:
     # 上一次多模态调用中"有图但视觉识别失败"的图片数(0=正常)。调用方据此给结果加醒目标注。
     last_vision_failed_images: int = 0

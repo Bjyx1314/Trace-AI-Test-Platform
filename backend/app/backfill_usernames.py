@@ -1,4 +1,4 @@
-"""把已存在用户的账号(username)统一回填为姓名拼音(如 张三→zhangsan)。
+﻿"""把已存在用户的账号(username)统一回填为姓名拼音(如 张三→zhangsan)。
 
 幂等：已是拼音的跳过；本地账号(auth_source=local，如内置 admin)不动；
 重名拼音按 created_at 先到先得，后者追加序号(zhangsan2…)。

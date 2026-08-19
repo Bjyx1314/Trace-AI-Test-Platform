@@ -1,10 +1,10 @@
-"""认证路由：token 换平台 JWT + 本地账号密码登录 + 当前用户信息。"""
+﻿"""认证路由：token 换平台 JWT + 本地账号密码登录 + 当前用户信息。"""
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import get_db
 from app.services.auth import (
-    verify_external_sso_token, get_or_create_platform_user, create_platform_jwt,
+    verify_external_task_token, get_or_create_platform_user, create_platform_jwt,
     authenticate_local_user, AuthError,
 )
 from app.dependencies import get_current_user
@@ -13,7 +13,7 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 
 class VerifyRequest(BaseModel):
-    token: str
+    token: str  # external task system token
 
 
 class LoginRequest(BaseModel):
@@ -23,7 +23,7 @@ class LoginRequest(BaseModel):
 
 @router.post("/login")
 async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
-    """本地账号密码登录，返回平台 JWT。"""
+    """本地账号密码登录（external task system 不可用时使用），返回平台 JWT。"""
     try:
         user = await authenticate_local_user(db, body.username.strip(), body.password)
     except AuthError as e:
@@ -44,34 +44,35 @@ async def login(body: LoginRequest, db: AsyncSession = Depends(get_db)):
 
 @router.get("/sso-config")
 async def sso_config(db: AsyncSession = Depends(get_db)):
-    """公开只读：返回外部 SSO 地址，供未登录页面跳转换票。"""
-    from app.services.app_settings import resolve_external_sso_url
-    return {"external_sso_url": await resolve_external_sso_url(db)}
+    """公开只读：返回 SSO 对接认证地址(external task system 地址),供前端未登录时跳转发券入口。"""
+    from app.services.app_settings import resolve_external_task_url
+    return {"external_task_url": await resolve_external_task_url(db)}
 
 
 @router.post("/verify")
 async def verify_token(body: VerifyRequest, db: AsyncSession = Depends(get_db)):
-    """用外部 SSO token 换取平台 JWT。"""
-    from app.services.app_settings import resolve_external_sso_url
-    base_url = await resolve_external_sso_url(db)
-    user_info = await verify_external_sso_token(body.token, base_url)
+    """用 external task system token 换取平台 JWT。前端跳转时调用一次，之后用返回的 jwt 访问其他接口。"""
+    from app.services.app_settings import resolve_external_task_url
+    base_url = await resolve_external_task_url(db)
+    user_info = await verify_external_task_token(body.token, base_url)
     if not user_info:
         from fastapi import HTTPException
-        raise HTTPException(status_code=401, detail="外部 SSO token 无效")
+        raise HTTPException(status_code=401, detail="external task system token 无效")
 
     platform_user = await get_or_create_platform_user(
         db,
-        external_user_id=user_info["user_id"],
+        external_task_user_id=user_info["user_id"],
         email=user_info.get("email", ""),
         name=user_info.get("name", ""),
         username=user_info.get("username", ""),
+        legacy_user_ids=user_info.get("legacy_user_ids") or [],
     )
 
     if not platform_user.is_active:
         raise HTTPException(status_code=403, detail="账号已被禁用，请联系管理员")
 
     jwt = create_platform_jwt(
-        user_id=platform_user.external_user_id,
+        user_id=platform_user.external_task_user_id,
         role=platform_user.role,
         name=platform_user.name,
         email=platform_user.email,
@@ -82,7 +83,7 @@ async def verify_token(body: VerifyRequest, db: AsyncSession = Depends(get_db)):
         "jwt": jwt,
         "user": {
             "id": platform_user.id,
-            "external_user_id": platform_user.external_user_id,
+            "external_task_user_id": platform_user.external_task_user_id,
             "name": platform_user.name,
             "email": platform_user.email,
             "role": platform_user.role,

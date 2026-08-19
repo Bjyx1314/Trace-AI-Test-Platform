@@ -13,3 +13,14 @@ from .users import router as users_router
 from .system_settings import router as system_settings_router
 from .frameworks import router as frameworks_router
 from .worker import router as worker_router
+from .code_impact import router as code_impact_router
+from .business_repos import router as business_repos_router
+from .app_login_recipes import router as app_login_recipes_router
+from .coverage import router as coverage_router
+from .experiences import router as experiences_router
+from .graph import router as graph_router
+from .quality_rules import router as quality_rules_router
+from .metrics import router as metrics_router
+from .fav_phones import router as fav_phones_router
+from .data_requirements import router as data_requirements_router
+from .data_registries import router as data_registries_router

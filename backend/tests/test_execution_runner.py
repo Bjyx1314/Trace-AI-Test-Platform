@@ -1,4 +1,4 @@
-"""RealExecutionRunner 集成测试 —— 连真实 PostgreSQL，验证逐用例真实执行并落库。
+﻿"""RealExecutionRunner 集成测试 —— 连真实 PostgreSQL，验证逐用例真实执行并落库。
 
 聚焦本步骤新增逻辑：run_execution 用 build_runner 选 Runner、逐用例真跑、落 TestResult、
 统计 passed/failed/skipped。收尾（门禁/缺陷/飞书）用 monkeypatch stub，避免引入重依赖。
@@ -17,7 +17,7 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-PG_URL = "postgresql+asyncpg://testplatform:testplatform@localhost:5432/test_platform"
+PG_URL = "postgresql+asyncpg://testplatform:testplatform_dev_pwd@localhost:5432/test_platform"
 
 
 def _pg_reachable() -> bool:
@@ -103,8 +103,7 @@ def test_run_execution_real_api(pg_session):
             assert statuses[cids[1]][1] == "real_defect"
         finally:
             async with Session() as db:
-                result_ids = select(TestResult.id).where(TestResult.execution_id == eid)
-                await db.execute(delete(Defect).where(Defect.test_result_id.in_(result_ids)))
+                await db.execute(delete(Defect).where(Defect.execution_id == eid))
                 await db.execute(delete(TestResult).where(TestResult.execution_id == eid))
                 await db.execute(delete(TestCase).where(TestCase.project_id == pid))
                 await db.execute(delete(Execution).where(Execution.id == eid))
@@ -122,11 +121,11 @@ def test_should_force_sonic_runner_only_for_android_cases():
             self.case_type = case_type
             self.platforms = platforms or []
 
-    app_group_map = {"mobile-app-a": "app"}
-    assert _should_force_sonic_runner(_Case(platforms=["mobile-app-a"]), "sonic:abc123", app_group_map) is True
+    app_group_map = {"移动 App": "app"}
+    assert _should_force_sonic_runner(_Case(platforms=["移动 App"]), "sonic:abc123", app_group_map) is True
     assert _should_force_sonic_runner(_Case(case_type="api", platforms=["接口"]), "sonic:abc123") is False
     assert _should_force_sonic_runner(_Case(case_type="ui", platforms=["web"]), "sonic:abc123") is False
-    assert _should_force_sonic_runner(_Case(platforms=["mobile-app-a"]), None, app_group_map) is False
+    assert _should_force_sonic_runner(_Case(platforms=["移动 App"]), None, app_group_map) is False
 
 
 def test_is_api_case_accepts_interface_platform_tag():
@@ -151,10 +150,10 @@ def test_resolve_case_runner_type_reads_platform_parent_key_map():
             self.case_type = case_type
             self.platforms = platforms or []
 
-    group_map = {"mobile-app-a": "app", "mobile-app-b": "app", "web-portal-a": "pc"}
-    assert _resolve_case_runner_type(_Case(platforms=["mobile-app-a"]), group_map) == "android"
-    assert _resolve_case_runner_type(_Case(platforms=["mobile-app-b"]), group_map) == "android"
-    assert _resolve_case_runner_type(_Case(platforms=["web-portal-a"]), group_map) == "web"
+    group_map = {"移动 App": "app", "Android App": "app", "管理后台": "pc"}
+    assert _resolve_case_runner_type(_Case(platforms=["移动 App"]), group_map) == "android"
+    assert _resolve_case_runner_type(_Case(platforms=["Android App"]), group_map) == "android"
+    assert _resolve_case_runner_type(_Case(platforms=["管理后台"]), group_map) == "web"
 
 
 def test_misrouted_app_platforms_blocks_web_fallback():
@@ -164,7 +163,9 @@ def test_misrouted_app_platforms_blocks_web_fallback():
         def __init__(self, platforms=None):
             self.platforms = platforms or []
 
-    group_map = {"mobile-app-a": "app", "web-portal-a": "pc"}
-    assert _misrouted_app_platforms(_Case(platforms=["mobile-app-a"]), group_map, "web") == ["mobile-app-a"]
-    assert _misrouted_app_platforms(_Case(platforms=["web-portal-a"]), group_map, "web") == []
-    assert _misrouted_app_platforms(_Case(platforms=["mobile-app-a"]), group_map, "android") == []
+    group_map = {"移动 App": "app", "管理后台": "pc", "web-admin": "pc"}
+    assert _misrouted_app_platforms(_Case(["移动 App"]), group_map, "web") == ["移动 App"]
+    assert _misrouted_app_platforms(_Case(["管理后台"]), group_map, "web") == []
+    assert _misrouted_app_platforms(_Case(["移动 App"]), group_map, "android") == []
+    # 含 PC 端(web-admin)的双端用例是刻意按 PC 跑，不算误路由，放行
+    assert _misrouted_app_platforms(_Case(["Android App", "web-admin"]), {"Android App": "app", "web-admin": "pc"}, "web") == []

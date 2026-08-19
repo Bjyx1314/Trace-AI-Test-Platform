@@ -111,7 +111,7 @@ class MockExecutionRunner:
                     tc.is_automated = True
                     await db.commit()
 
-                # 执行情况展示物料：UI端(pc/移动/小程序)截图；接口端请求/返回/trace
+                # 执行情况展示资源：UI端(pc/移动/小程序)截图；接口端请求/返回/trace
                 is_api = script_type in ("api", "backend_api") or tc.case_type == "api"
                 screenshot_url = None if is_api else _mock_screenshot(status)
                 api_trace = _mock_api_trace(tc, status) if is_api else None

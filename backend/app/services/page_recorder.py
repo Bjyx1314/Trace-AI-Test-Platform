@@ -18,6 +18,10 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
+import time
+import uuid
+from dataclasses import dataclass, field
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
@@ -26,7 +30,7 @@ PC_VIEWPORT = "1280,800"
 
 # codegen 生成 python 脚本里典型语句的解析正则
 _GOTO_RE = re.compile(r"""page\.goto\(\s*["']([^"']+)["']""")
-# get_by_role("button", name="新建用户") —— 文案取 name= 的值
+# get_by_role("button", name="新建资源") —— 文案取 name= 的值
 _ROLE_NAME_RE = re.compile(r"""get_by_role\(\s*["'][^"']*["']\s*,\s*name\s*=\s*["']([^"']+)["']""")
 # get_by_text / get_by_label / get_by_placeholder / get_by_title("文案")
 _LOCATOR_RE = re.compile(r"""get_by_(?:text|label|placeholder|title)\(\s*["']([^"']*?)["']""")
@@ -44,7 +48,7 @@ class RecorderError(RuntimeError):
 def record_pages(base_url: str, start_path: str | None = None, timeout_sec: int = 1800) -> list[dict]:
     """启动 Playwright 录制并把录制结果解析为页面结构条目列表。
 
-    base_url   ：已配置的 PC 端基础地址，如 https://app.example.test
+    base_url   ：已配置的 PC 端基础地址，如 http://localhost:3000
     start_path ：可选的起始路径，浏览器打开后直接落在该页（仍可自由跳转）
     timeout_sec：录制最长时长兜底（默认 30 分钟），超时强杀子进程
 
@@ -171,3 +175,134 @@ def _to_cache_entry(page: dict) -> dict:
         "page_name": page_name,
         "regions": regions,
     }
+
+
+# ─── 录制会话（多窗口）───────────────────────────────────────────────────────────
+# 旧版 record_pages() 是「一次 HTTP 请求阻塞到关窗」，只能同时开一个窗口。
+# 会话化后：start_session 用 Popen 非阻塞启动 codegen（弹窗即返回 session_id），
+# 前端可同时开多个；重复打开同一 target 时复用存活会话（不再重复弹窗）。
+# 进程退出后由 sync_session 解析脚本 → entries，落库在 router 层。
+
+@dataclass
+class RecordSession:
+    session_id: str
+    project_id: str
+    base_url: str
+    start_path: str | None
+    proc: subprocess.Popen
+    tmp_dir: str
+    out_file: str
+    started_at: float
+    status: str = "recording"          # recording | parsed | done | error
+    error: str | None = None
+    entries: list[dict] = field(default_factory=list)
+    # 落库结果（router 在 status→done 时写入）
+    created_count: int = 0
+    updated_count: int = 0
+    existing_paths: list[dict] = field(default_factory=list)
+
+
+_SESSIONS: dict[str, RecordSession] = {}
+_SESSIONS_LOCK = threading.Lock()
+
+
+def _target_key(project_id: str, base_url: str, start_path: str | None) -> str:
+    return f"{project_id}|{base_url.rstrip('/')}|{(start_path or '').strip('/')}"
+
+
+def start_session(project_id: str, base_url: str, start_path: str | None = None) -> tuple[RecordSession, bool]:
+    """非阻塞启动一个录制会话。若同一 target 已有存活会话则复用返回。
+
+    返回 (session, reused)。reused=True 表示复用了正在录制的既有窗口，未再弹新窗口。
+    无可用 CLI / 启动失败时抛 RecorderError。
+    """
+    cli = playwright_cli()
+    if not cli:
+        raise RecorderError(
+            "未检测到本机 Playwright CLI，无法录制。请先安装：npm i -g playwright && playwright install chromium"
+        )
+    key = _target_key(project_id, base_url, start_path)
+    with _SESSIONS_LOCK:
+        # 复用同 target 的存活会话（重复打开 → 复用现有窗口，不再弹新窗）
+        for s in _SESSIONS.values():
+            if (s.status == "recording" and s.proc.poll() is None
+                    and _target_key(s.project_id, s.base_url, s.start_path) == key):
+                return s, True
+
+        start_url = (urljoin(base_url.rstrip("/") + "/", (start_path or "").lstrip("/"))
+                     if start_path else base_url)
+        tmp_dir = tempfile.mkdtemp(prefix="pw_rec_")
+        out_file = str(Path(tmp_dir) / "recorded.py")
+        cmd = [cli, "codegen", "--target", "python", "--viewport-size", PC_VIEWPORT, "-o", out_file, start_url]
+        try:
+            proc = subprocess.Popen(cmd)  # 非阻塞：弹窗后立即返回
+        except FileNotFoundError as e:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise RecorderError("Playwright CLI 启动失败，请确认已正确安装") from e
+        except Exception as e:  # noqa: BLE001
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+            raise RecorderError(f"启动录制失败：{e}") from e
+
+        sess = RecordSession(
+            session_id=uuid.uuid4().hex[:12], project_id=project_id, base_url=base_url,
+            start_path=start_path, proc=proc, tmp_dir=tmp_dir, out_file=out_file,
+            started_at=time.time(),
+        )
+        _SESSIONS[sess.session_id] = sess
+        return sess, False
+
+
+def _maybe_parse(sess: RecordSession) -> None:
+    """进程已退出且尚未解析 → 解析脚本填充 entries/status（仍在录则不动）。"""
+    if sess.status != "recording" or sess.proc.poll() is None:
+        return
+    try:
+        if not Path(sess.out_file).exists():
+            sess.status = "error"
+            sess.error = "未捕获到录制结果（录制时请至少访问一个页面后再关闭浏览器）"
+            return
+        script = Path(sess.out_file).read_text(encoding="utf-8", errors="ignore")
+        sess.entries = _parse_recorded_script(script, sess.base_url)
+        sess.status = "parsed"
+    except RecorderError as e:
+        sess.status = "error"
+        sess.error = str(e)
+    except Exception as e:  # noqa: BLE001
+        sess.status = "error"
+        sess.error = f"解析录制脚本失败：{e}"
+    finally:
+        shutil.rmtree(sess.tmp_dir, ignore_errors=True)
+
+
+def list_sessions(project_id: str) -> list[RecordSession]:
+    """返回该项目的所有录制会话，并顺带推进已退出会话的解析。"""
+    with _SESSIONS_LOCK:
+        out = []
+        for s in list(_SESSIONS.values()):
+            if s.project_id != project_id:
+                continue
+            _maybe_parse(s)
+            out.append(s)
+        return out
+
+
+def get_session(session_id: str) -> RecordSession | None:
+    with _SESSIONS_LOCK:
+        s = _SESSIONS.get(session_id)
+        if s:
+            _maybe_parse(s)
+        return s
+
+
+def close_session(session_id: str) -> None:
+    """结束并移除会话（若进程仍在录则终止）。"""
+    with _SESSIONS_LOCK:
+        s = _SESSIONS.pop(session_id, None)
+    if not s:
+        return
+    if s.proc.poll() is None:
+        try:
+            s.proc.terminate()
+        except Exception:  # noqa: BLE001
+            pass
+    shutil.rmtree(s.tmp_dir, ignore_errors=True)

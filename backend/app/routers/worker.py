@@ -184,6 +184,8 @@ class ResultIn(BaseModel):
     error_message: str | None = None
     failure_type: str | None = None   # script_error/env_error/real_defect
     ui_trace: list | None = None
+    apk_install_ok: bool | None = None
+    app_launch_by_package_ok: bool | None = None
 
 
 @router.post("/jobs/{job_id}/result", dependencies=[Depends(require_worker)])

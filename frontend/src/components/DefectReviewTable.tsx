@@ -247,6 +247,7 @@ export default function DefectReviewTable({
                   {metaRow('状态', <Tag color={DEFECT_STATUS_COLOR[selected.status]}>{DEFECT_STATUS_LABEL[selected.status] || selected.status}</Tag>)}
                   {metaRow('关联用例ID', <span style={{ fontFamily: MONO, fontSize: 12.5, color: '#475569' }}>{selected.test_case_id}</span>)}
                   {metaRow('关联执行ID', <span style={{ fontFamily: MONO, fontSize: 12.5, color: '#475569' }}>{selected.execution_id}</span>)}
+                  {metaRow('来源', <Tag color={selected.source === 'production' ? 'red' : 'default'}>{selected.source === 'production' ? '线上逃逸' : selected.source || 'execution'}</Tag>)}
                 </div>
 
                 {/* 草稿单 */}

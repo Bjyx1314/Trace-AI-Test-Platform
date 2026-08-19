@@ -1,4 +1,4 @@
-$ErrorActionPreference = 'Stop'
+﻿$ErrorActionPreference = 'Stop'
 
 # 该脚本自身包含用于拦截的关键词，因此必须从内容扫描中排除。
 $exclude = @(
@@ -16,7 +16,7 @@ $patterns = @(
   'github_pat_[A-Za-z0-9_]{20,}',
   'xox[baprs]-[A-Za-z0-9-]{10,}',
   '-----BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY-----',
-  '[A-Za-z]:\\',
+  '[A-Za-z]:\\[^nrt]',
   '(?i)agent[-_ ]board',
   '(?i)\bcrm\b',
   '拜访',

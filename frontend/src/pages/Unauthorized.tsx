@@ -1,4 +1,4 @@
-import { Result, Button } from 'antd'
+﻿import { Result, Button } from 'antd'
 
 export default function Unauthorized() {
   return (
@@ -6,7 +6,7 @@ export default function Unauthorized() {
       <Result
         status="403"
         title="未授权访问"
-        subTitle="请通过已配置的外部 SSO 或本地登录页进入平台。"
+        subTitle="请通过 external task system 进入测试平台，或联系管理员获取权限。"
         extra={
           <Button type="primary" onClick={() => window.history.back()}>
             返回

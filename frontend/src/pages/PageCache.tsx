@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useCallback, useEffect, useRef, useState } from 'react'
 import {
   Card, Table, Tag, Button, Space, Drawer, Input, Select,
   Modal, message, Typography, Descriptions, List, Empty,
@@ -7,12 +7,14 @@ import {
 import {
   PlusOutlined, DeleteOutlined, ReloadOutlined,
   GlobalOutlined, SearchOutlined, VideoCameraOutlined,
+  CloseOutlined, LoadingOutlined,
 } from '@ant-design/icons'
 import { pageCacheApi, enumsApi } from '../api'
 import { confirmDialog } from '../components/ConfirmModal'
 import { useProjectStore } from '../store/projectStore'
 import { PANEL_CARD_STYLE, MONO_FONT } from '../styles/theme'
 import type { PageStructureCache } from '../types/api'
+import type { RecordSession } from '../api'
 
 const STATUS_COLOR: Record<string, string> = {
   active: 'success',
@@ -40,12 +42,14 @@ export default function PageCache() {
   const [detailDrawer, setDetailDrawer] = useState<PageStructureCache | null>(null)
   const [keyword, setKeyword] = useState('')
 
-  // 人工录入（Playwright 录制）state
+  // 人工录入（Playwright 录制）state —— 会话化：可同时开多个录制窗口
   const [recordModal, setRecordModal] = useState(false)
   const [recordBaseUrl, setRecordBaseUrl] = useState<string | undefined>()
   const [recordStartPath, setRecordStartPath] = useState('')
-  const [recording, setRecording] = useState(false)
+  const [starting, setStarting] = useState(false)
   const [recorderAvailable, setRecorderAvailable] = useState<boolean | null>(null)
+  const [sessions, setSessions] = useState<RecordSession[]>([])
+  const handledRef = useRef<Set<string>>(new Set())  // 已弹过结果提示的 session_id，避免重复
 
   // AI exploration state
   const [baseUrl, setBaseUrl] = useState<string | undefined>()
@@ -66,6 +70,8 @@ export default function PageCache() {
   }
 
   useEffect(() => { load() }, [currentProject?.id])
+  // 切项目时拉一次录制会话，接管可能仍在进行中的窗口
+  useEffect(() => { handledRef.current.clear(); setSessions([]); if (currentProject) void pollSessions() }, [currentProject?.id]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     enumsApi.list('base_url').then((r) => {
@@ -87,52 +93,93 @@ export default function PageCache() {
       .catch(() => setRecorderAvailable(false))
   }, [])
 
-  // 人工录入：启动 Playwright 录制（请求会阻塞到用户关闭录制浏览器）
-  const handleRecord = async () => {
+  const sessionLabel = (s: RecordSession) => (s.start_path ? `${s.base_url}${s.start_path.startsWith('/') ? '' : '/'}${s.start_path}` : s.base_url)
+
+  // 会话结束（done/error）时的收尾：提示结果、按需覆盖已存在页面、刷新列表
+  const settleSession = async (s: RecordSession) => {
+    if (s.status === 'error') {
+      message.error(`录制失败（${sessionLabel(s)}）：${s.error || '未知错误'}`)
+      return
+    }
+    if (s.existing_paths.length > 0) {
+      const okd = await confirmDialog({
+        title: '部分页面已存在缓存',
+        desc: `以下录制到的页面已缓存，是否重新缓存（覆盖）？\n${s.existing_paths.map((e) => e.page_name || e.url_pattern).join('、')}`,
+        ok: '重新缓存', cancel: '跳过这些', danger: true,
+      })
+      if (okd) {
+        try {
+          const r2 = await pageCacheApi.recordCommit(s.session_id, true)
+          message.success(`已覆盖（${sessionLabel(s)}）：新建 ${r2.data.created_count} 个，更新 ${r2.data.updated_count} 个`)
+        } catch {
+          message.error('覆盖失败，请重试')
+        }
+      } else {
+        message.success(`录制完成（${sessionLabel(s)}）：新建 ${s.created_count} 个，跳过已存在 ${s.existing_paths.length} 个`)
+      }
+    } else {
+      message.success(`录制完成（${sessionLabel(s)}）：新建 ${s.created_count} 个，更新 ${s.updated_count} 个`)
+    }
+    load()
+  }
+
+  // 轮询所有录制会话状态；后端会把刚结束的会话自动入库并转为 done
+  const pollSessions = useCallback(async () => {
+    if (!currentProject) return
+    try {
+      const r = await pageCacheApi.recordSessions(currentProject.id)
+      setSessions(r.data.sessions)
+      for (const s of r.data.sessions) {
+        if ((s.status === 'done' || s.status === 'error') && !handledRef.current.has(s.session_id)) {
+          handledRef.current.add(s.session_id)
+          void settleSession(s)
+        }
+      }
+    } catch { /* 轮询失败忽略，下次再试 */ }
+  }, [currentProject?.id]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // 有进行中的会话时才轮询（每 2s）；无活跃会话即停止
+  const anyActive = sessions.some((s) => s.status === 'recording' || s.status === 'parsed')
+  useEffect(() => {
+    if (!currentProject || !anyActive) return
+    const timer = setInterval(pollSessions, 2000)
+    return () => clearInterval(timer)
+  }, [currentProject?.id, anyActive, pollSessions])
+
+  // 人工录入：非阻塞启动一个录制窗口（可多开；重复打开同一页面则复用现有窗口）
+  const handleStartRecord = async () => {
     if (!currentProject || !recordBaseUrl) {
       message.warning('请先选择 PC 端地址')
       return
     }
-    setRecording(true)
+    setStarting(true)
     try {
-      const r = await pageCacheApi.record({
+      const r = await pageCacheApi.recordStart({
         project_id: currentProject.id,
         base_url: recordBaseUrl,
         start_path: recordStartPath.trim() || undefined,
-        overwrite: false,
       })
-      const d = r.data
-      const finish = (created: number, updated: number, skipped: number) => {
-        message.success(`录制完成：新建 ${created} 个，更新 ${updated} 个${skipped ? `，跳过已存在 ${skipped} 个` : ''}`)
-        setRecordModal(false)
-        load()
-      }
-      if (d.existing_paths.length > 0) {
-        const okd = await confirmDialog({
-          title: '部分页面已存在缓存',
-          desc: `以下录制到的页面已缓存，是否重新缓存（覆盖）？\n${d.existing_paths.map((e) => e.page_name || e.url_pattern).join('、')}`,
-          ok: '重新缓存', cancel: '跳过这些', danger: true,
-        })
-        if (okd) {
-          const r2 = await pageCacheApi.record({
-            project_id: currentProject.id,
-            base_url: recordBaseUrl,
-            start_path: recordStartPath.trim() || undefined,
-            overwrite: true,
-          })
-          finish(r2.data.created_count, r2.data.updated_count, 0)
-        } else {
-          finish(d.created_count, d.updated_count, d.existing_paths.length)
-        }
+      if (r.data.reused) {
+        message.info('该页面已有录制窗口进行中，已复用现有窗口')
       } else {
-        finish(d.created_count, d.updated_count, 0)
+        message.success('已弹出录制窗口，请在浏览器中操作，完成后关闭窗口即结束')
       }
+      handledRef.current.delete(r.data.session.session_id)
+      setSessions((prev) => [...prev.filter((x) => x.session_id !== r.data.session.session_id), r.data.session])
+      setRecordModal(false)
     } catch (e) {
       const detail = (e as { response?: { data?: { detail?: string } } })?.response?.data?.detail
-      message.error(detail || '录制失败，请重试')
+      message.error(detail || '启动录制失败，请重试')
     } finally {
-      setRecording(false)
+      setStarting(false)
     }
+  }
+
+  // 关闭/移除一个录制会话（进程仍在录则后端终止）
+  const closeSession = async (s: RecordSession) => {
+    try { await pageCacheApi.recordClose(s.session_id) } catch { /* ignore */ }
+    handledRef.current.delete(s.session_id)
+    setSessions((prev) => prev.filter((x) => x.session_id !== s.session_id))
   }
 
   const runExplore = async (
@@ -357,6 +404,51 @@ export default function PageCache() {
         )}
       </Card>
 
+      {sessions.length > 0 && (
+        <Card
+          title={<span><VideoCameraOutlined style={{ marginRight: 6 }} />录制窗口（{sessions.length}）</span>}
+          bordered={false}
+          style={{ ...PANEL_CARD_STYLE, marginBottom: 16 }}
+          size="small"
+        >
+          <List
+            size="small"
+            dataSource={sessions}
+            renderItem={(s) => {
+              const tag = s.status === 'recording'
+                ? <Tag icon={<LoadingOutlined />} color="processing">录制中</Tag>
+                : s.status === 'parsed'
+                  ? <Tag icon={<LoadingOutlined />} color="warning">解析中</Tag>
+                  : s.status === 'error'
+                    ? <Tag color="error">失败</Tag>
+                    : <Tag color="success">已完成</Tag>
+              return (
+                <List.Item
+                  actions={[
+                    <Button key="close" type="text" size="small" icon={<CloseOutlined />} onClick={() => closeSession(s)}>
+                      {s.status === 'recording' ? '终止' : '移除'}
+                    </Button>,
+                  ]}
+                >
+                  <Space size={10} wrap>
+                    {tag}
+                    <span style={{ fontFamily: MONO_FONT, fontSize: 12.5 }}>{sessionLabel(s)}</span>
+                    {s.status === 'done' && (
+                      <span style={{ fontSize: 12, color: '#64748B' }}>
+                        新建 {s.created_count} · 更新 {s.updated_count}
+                        {s.existing_paths.length ? ` · 跳过 ${s.existing_paths.length}` : ''}
+                      </span>
+                    )}
+                    {s.status === 'error' && <span style={{ fontSize: 12, color: '#DC2626' }}>{s.error}</span>}
+                    {s.status === 'recording' && <span style={{ fontSize: 12, color: '#94A3B8' }}>在弹出的浏览器中操作，完成后关闭窗口即结束</span>}
+                  </Space>
+                </List.Item>
+              )
+            }}
+          />
+        </Card>
+      )}
+
       <Card
         title={`已缓存页面结构（${data.length}）`}
         bordered={false}
@@ -509,13 +601,11 @@ export default function PageCache() {
       <Modal
         title="人工录入页面结构缓存（Playwright 录制）"
         open={recordModal}
-        onOk={handleRecord}
-        onCancel={() => { if (!recording) setRecordModal(false) }}
-        confirmLoading={recording}
-        okText={recording ? '录制中…' : '开始录制'}
+        onOk={handleStartRecord}
+        onCancel={() => setRecordModal(false)}
+        confirmLoading={starting}
+        okText="开始录制"
         okButtonProps={{ icon: <VideoCameraOutlined />, disabled: !recordBaseUrl || recorderAvailable === false }}
-        cancelButtonProps={{ disabled: recording }}
-        maskClosable={!recording}
         width={560}
       >
         <Alert
@@ -543,17 +633,15 @@ export default function PageCache() {
               style={{ width: '100%' }}
               options={baseUrlOptions}
               allowClear
-              disabled={recording}
               notFoundContent="请先在「枚举管理 → base_url」配置 PC 端地址"
             />
           </div>
           <div>
             <div style={{ fontSize: 13, color: '#555', marginBottom: 6 }}>② 起始路径（可选，浏览器打开后直接落在该页）：</div>
             <Input
-              placeholder="例：/admin/users（留空则打开 PC 端首页）"
+              placeholder="例：/module/items（留空则打开 PC 端首页）"
               value={recordStartPath}
               onChange={(e) => setRecordStartPath(e.target.value)}
-              disabled={recording}
             />
           </div>
           <Alert
@@ -565,16 +653,11 @@ export default function PageCache() {
                 点击「开始录制」后会以 <b>PC 桌面视口</b> 弹出真实浏览器，请在其中
                 <b>自主操作</b>需要缓存的页面（点击、跳转、填写等）。
                 操作完成后<b>关闭该浏览器窗口即结束录制</b>，系统会自动把访问过的页面结构写入缓存。
+                <br />可<b>同时开多个录制窗口</b>（每次选好地址点「开始录制」即再开一个）；
+                重复打开同一页面会<b>复用已在录制的窗口</b>。进度见下方「录制窗口」列表。
               </div>
             }
           />
-          {recording && (
-            <Alert
-              type="success"
-              showIcon
-              message="录制进行中…请在弹出的浏览器中操作，完成后关闭浏览器窗口以结束录制"
-            />
-          )}
         </Space>
       </Modal>
     </div>

@@ -41,7 +41,7 @@ English summary:
 
 ```json
 {
-  "web-admin": {
+  "demo-web": {
     "project": "demo",
     "web": "main",
     "auth_type": "password",

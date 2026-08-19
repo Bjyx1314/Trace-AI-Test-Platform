@@ -1,4 +1,4 @@
-"""按发起用户解析 AI key（per-user key）。
+﻿"""按发起用户解析 AI key（per-user key）。
 
 所有 AI 操作（需求分析/用例生成/执行/App）都走发起人自己的中转 key：
 - 入口处用 resolve_user_ai_key 取发起人 key（未配置→ NoAiKeyError，上层转成清晰报错）；
@@ -21,7 +21,7 @@ class NoAiKeyError(Exception):
 
 
 async def get_user_record(db: AsyncSession, user: dict | None) -> PlatformUser | None:
-    """按 JWT 载荷找到 PlatformUser：优先 uid(主键)，回退 sub(external_user_id)。"""
+    """按 JWT 载荷找到 PlatformUser：优先 uid(主键)，回退 sub(external_task_user_id)。"""
     user = user or {}
     uid = user.get("uid")
     sub = user.get("sub")
@@ -30,7 +30,7 @@ async def get_user_record(db: AsyncSession, user: dict | None) -> PlatformUser |
         u = await db.get(PlatformUser, uid)
     if u is None and sub:
         u = (await db.execute(
-            select(PlatformUser).where(PlatformUser.external_user_id == sub)
+            select(PlatformUser).where(PlatformUser.external_task_user_id == sub)
         )).scalar_one_or_none()
     return u
 

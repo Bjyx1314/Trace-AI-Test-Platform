@@ -1,14 +1,22 @@
-import { useEffect, useRef, useState } from 'react'
+﻿import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { useParams, useNavigate, useLocation } from 'react-router-dom'
 import {
   Card, Button, Table, Tag, Space, Typography, Descriptions, Empty, Badge, Progress,
-  Input, List, message, Image, Modal, Alert, Checkbox, Drawer, Form, Select, Dropdown, Tooltip,
+  Input, List, message, Image, Modal, Alert, Checkbox, Drawer, Form, Select, Dropdown, Tooltip, Tabs,
+  Segmented, Collapse, Row, Col,
 } from 'antd'
 import { requirementsApi, testCasesApi, defectsApi, executionsApi, pipelineApi, enumsApi, slicesApi } from '../api'
 import ExecConfigModal, { categorizeCaseByPlatform, isAutoExecutable } from '../components/ExecConfigModal'
 import { confirmDialog } from '../components/ConfirmModal'
 import DefectReviewTable from '../components/DefectReviewTable'
+import CaseCoveredItemsBlock from '../components/CaseCoveredItemsBlock'
+import CaseMindMap from '../components/CaseMindMap'
+import ExperiencePanel from '../components/ExperiencePanel'
+import ReleaseReportCard from '../components/ReleaseReportCard'
+import DataRequirementModal from '../components/DataRequirementModal'
+import CodeImpact from './CodeImpact'
+import CoverageMatrix from './CoverageMatrix'
 import type { CheckboxChangeEvent } from 'antd/es/checkbox'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
@@ -63,7 +71,7 @@ const CASE_STATUS_FILTER_OPTIONS: { value: string; label: string }[] = (() => {
   return opts
 })()
 const EXEC_STATUS_COLOR: Record<string, string> = {
-  pending: 'default', running: 'processing', done: 'success', failed: 'error',
+  pending: 'default', running: 'processing', done: 'success', failed: 'error', canceled: 'default',
 }
 const DEFECT_STATUS_COLOR: Record<string, string> = {
   draft: 'default', ticket_created: 'processing', confirmed: 'red', ignored: 'default', duplicate: 'purple', fixed: 'success',
@@ -73,8 +81,62 @@ const DEFECT_STATUS_LABEL: Record<string, string> = {
 }
 
 const IN_PROGRESS_STATUSES = ['analyzing', 'generating_cases']
+const ACTIVE_EXEC_STORAGE_KEY = 'tp_requirement_active_execs_v1'
 
 const FILTER_BRAND = '#D97757'
+
+type ActiveExecRef = { id: string; caseIds: string[]; isApp: boolean; requirementId?: string }
+
+function readStoredActiveExecs(requirementId?: string): ActiveExecRef[] {
+  if (!requirementId || typeof window === 'undefined') return []
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_EXEC_STORAGE_KEY)
+    const all = raw ? JSON.parse(raw) : []
+    if (!Array.isArray(all)) return []
+    return all.filter((it: any) => it && it.requirementId === requirementId && typeof it.id === 'string')
+  } catch {
+    return []
+  }
+}
+
+function writeStoredActiveExecs(requirementId: string | undefined, items: ActiveExecRef[]) {
+  if (!requirementId || typeof window === 'undefined') return
+  try {
+    const raw = window.localStorage.getItem(ACTIVE_EXEC_STORAGE_KEY)
+    const all = Array.isArray(raw ? JSON.parse(raw) : []) ? (raw ? JSON.parse(raw) : []) : []
+    const merged = [
+      ...all.filter((it: any) => it?.requirementId !== requirementId),
+      ...items.map((it) => ({ ...it, requirementId })),
+    ]
+    window.localStorage.setItem(ACTIVE_EXEC_STORAGE_KEY, JSON.stringify(merged))
+  } catch {
+    // ignore localStorage errors
+  }
+}
+
+// ── 需求详情 Tab 栏「方案A·分段胶囊」重设计（沿用 TraceAI 设计语言）──────────────
+const TAB_ICONS: Record<string, JSX.Element> = {
+  analysis: (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"><path d="M9 3h6a2 2 0 0 1 2 2h1a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h1" /><rect x="9" y="2" width="6" height="4" rx="1" /><path d="M9 13l2 2 4-4" /></svg>),
+  'code-impact': (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"><path d="M8 9l-3 3 3 3M16 9l3 3-3 3M13 7l-2 10" /></svg>),
+  testcases: (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"><path d="M9 6h11M9 12h11M9 18h11" /><path d="M4 6l1 1 2-2M4 12l1 1 2-2M4 18l1 1 2-2" /></svg>),
+  defects: (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"><path d="M8 6a4 4 0 0 1 8 0M6 10h12M12 10v10M6 14H3M6 18H4M18 14h3M18 18h2M9 10a3 3 0 0 0-3 3v3a6 6 0 0 0 12 0v-3a3 3 0 0 0-3-3" /></svg>),
+  coverage: (<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.9} strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>),
+}
+
+const PILL_TABBAR_CSS = `
+.tp-pillbar-scroll{overflow-x:auto;scrollbar-width:thin;margin:2px 0 12px}
+.tp-pillbar{display:inline-flex;gap:3px;padding:4px;background:#F1F4F6;border:1px solid #ECEFF2;border-radius:12px}
+.tp-pill{border:0;background:transparent;cursor:pointer;font-family:inherit;font-size:13.5px;color:#64748B;display:inline-flex;align-items:center;gap:8px;white-space:nowrap;padding:8px 14px;border-radius:9px;transition:color .15s,background .15s,box-shadow .15s}
+.tp-pill svg{width:16px;height:16px;flex:none;opacity:.85}
+.tp-pill:hover{color:#1E293B}
+.tp-pill:focus-visible{outline:2px solid #D97757;outline-offset:2px}
+.tp-pill[aria-selected="true"]{background:#fff;color:#B5600A;font-weight:600;box-shadow:0 6px 16px -8px rgba(217,119,87,.35),0 1px 3px rgba(16,24,40,.06)}
+.tp-pill[aria-selected="true"] svg{opacity:1;color:#D97757}
+.tp-pill-count{font-family:'JetBrains Mono','SF Mono','Roboto Mono',ui-monospace,Menlo,Consolas,monospace;font-size:11px;font-weight:600;line-height:1;padding:3px 7px;border-radius:999px;background:#EEF1F4;color:#64748B;font-variant-numeric:tabular-nums}
+.tp-pill-count.err{background:#FDECEC;color:#EF4444}
+.tp-pill-count.brand{background:#FEF3EE;color:#B5600A}
+.tp-pill-dot{width:7px;height:7px;border-radius:50%;background:#16A34A;box-shadow:0 0 0 3px #E9F6EE}
+`
 
 // 通用描边按钮(需求详情标题行)
 const GHOST_BTN: CSSProperties = {
@@ -134,6 +196,8 @@ export default function RequirementDetail() {
   const navigate = useNavigate()
   const location = useLocation()
 
+  // 需求详情 tab：需求分析 / 代码分析 / 测试用例 / 测试缺陷 / 覆盖矩阵
+  const [activeTab, setActiveTab] = useState<string>('analysis')
   const [req, setReq] = useState<any>(null)
   const [cases, setCases] = useState<any[]>([])
   const [defectsData, setDefectsData] = useState<any[]>([])
@@ -141,7 +205,7 @@ export default function RequirementDetail() {
   const [analyzing, setAnalyzing] = useState(false)
   const [generating, setGenerating] = useState(false)
   // 多执行并发追踪：记录每个在跑执行的用例集与是否含App，用于"只置灰在跑用例 + App串行"
-  const [activeExecs, setActiveExecs] = useState<{ id: string; caseIds: string[]; isApp: boolean }[]>([])
+  const [activeExecs, setActiveExecs] = useState<ActiveExecRef[]>([])
   // 各 PC 端是否可登录(框架覆盖)。无法登录的 web 端用例将禁止执行。
   const [webCoverage, setWebCoverage] = useState<Record<string, boolean>>({})
   const [pollTick, setPollTick] = useState(0)
@@ -156,8 +220,20 @@ export default function RequirementDetail() {
   const [lastResultData, setLastResultData] = useState<any[]>([])
   const [lastResultLoading, setLastResultLoading] = useState(false)
   const [execModalOpen, setExecModalOpen] = useState(false)
+  // 数据要求维护弹窗（测试数据准备 MVP-0）
+  const [dataReqCase, setDataReqCase] = useState<{ caseId: string; title: string } | null>(null)
+  // 执行实时日志抽屉 + 取消执行
+  const [logsOpen, setLogsOpen] = useState(false)
+  const [logsExecId, setLogsExecId] = useState<string | null>(null)
+  const [logsCaseId, setLogsCaseId] = useState<string | undefined>(undefined)  // 只看某条用例的日志(批量执行)
+  const [logsCaseTitle, setLogsCaseTitle] = useState<string>('')
+  const [logLines, setLogLines] = useState<{ seq: number; ts: number; text: string; level: string }[]>([])
+  const [logTick, setLogTick] = useState(0)
+  const [canceling, setCanceling] = useState<Set<string>>(new Set())
+  const [finishedCaseIds, setFinishedCaseIds] = useState<Set<string>>(new Set())  // 批量执行中已出结果的用例(不再显示"测试中")
+  const logSeqRef = useRef(0)
+  const logScrollRef = useRef<HTMLDivElement>(null)
   const [pendingCaseIds, setPendingCaseIds] = useState<string[]>([])
-  const [execApiBaseUrl, setExecApiBaseUrl] = useState('')
   const [shouldOpenExecModal, setShouldOpenExecModal] = useState(false)
   const [selectedPointIds, setSelectedPointIds] = useState<string[]>([])
   const [batchConfirming, setBatchConfirming] = useState(false)
@@ -180,7 +256,63 @@ export default function RequirementDetail() {
   const [caseDetail, setCaseDetail] = useState<any>(null)
   const [caseEditMode, setCaseEditMode] = useState(false)
   const [caseSaving, setCaseSaving] = useState(false)
+  const [regenCp, setRegenCp] = useState(false)  // 按步骤重新生成锚点
   const [caseForm] = Form.useForm()
+
+  // 用例视图：flat=平铺 / group=按功能分组折叠(F2) / mindmap=脑图(F3)
+  const [caseViewMode, setCaseViewMode] = useState<'flat' | 'group' | 'mindmap'>('flat')
+  // 手动新增用例(F4)
+  const [addCaseOpen, setAddCaseOpen] = useState(false)
+  const [addCaseSaving, setAddCaseSaving] = useState(false)
+  const [addCaseForm] = Form.useForm()
+  // 人工补充需求点(F6，选填)：参与重新分析/生成
+  const [supplementDraft, setSupplementDraft] = useState('')
+
+  useEffect(() => {
+    setActiveExecs(readStoredActiveExecs(id))
+  }, [id])
+
+  // 服务端口径同步「进行中执行」：任意查看者（不只发起人）都能看到正在执行的用例。
+  // 不做常驻轮询——只在【打开页面 / 用例加载完 / 标签页重新获得焦点】时各拉一次：
+  //   · 新打开需求的人：挂载即拉到当前在跑的执行；
+  //   · 已在页面、切走又切回的人：focus 时刷新；
+  //   · 执行「结束」的检测由下方 per-exec 轮询负责（仅在有活动执行时运行）。
+  // 唯一不即时的场景是「你正盯着页面、别人此刻才开始执行」——无推送通道，可接受（切标签页或刷新即见）。
+  useEffect(() => {
+    if (!id) return
+    let stop = false
+    const sync = async () => {
+      try {
+        const r = await executionsApi.active(id)
+        if (stop) return
+        const serverRefs = r.data
+          .filter((e) => (e.case_ids || []).length)
+          .map((e) => ({
+            id: e.id,
+            caseIds: e.case_ids,
+            isApp: cases.some((c) => e.case_ids.includes(c.id) && categorizeCaseByPlatform(c) === 'mobile'),
+            requirementId: id,
+          }))
+        setActiveExecs((prev) => {
+          const prevIds = new Set(prev.map((x) => x.id))
+          const added = serverRefs.filter((s) => !prevIds.has(s.id))
+          if (!added.length) return prev
+          const next = [...prev, ...added]
+          writeStoredActiveExecs(id, next)
+          return next
+        })
+      } catch { /* 瞬时失败忽略 */ }
+    }
+    sync()
+    const onFocus = () => { if (document.visibilityState === 'visible') sync() }
+    document.addEventListener('visibilitychange', onFocus)
+    window.addEventListener('focus', onFocus)
+    return () => {
+      stop = true
+      document.removeEventListener('visibilitychange', onFocus)
+      window.removeEventListener('focus', onFocus)
+    }
+  }, [id, cases])
 
   const loadCases = () => testCasesApi.list({ requirement_id: id }).then((r) => setCases(r.data))
   const loadDefects = () => defectsApi.list({ requirement_id: id }).then((r) => setDefectsData(r.data))
@@ -191,8 +323,18 @@ export default function RequirementDetail() {
   const [activeSliceId, setActiveSliceId] = useState<string | undefined>(undefined)
   const loadSlices = () => slicesApi.list(id!).then((r) => {
     setSlices(r.data)
-    setActiveSliceId((cur) =>
-      cur && r.data.some((s) => s.id === cur) ? cur : (r.data.find((s) => s.is_default)?.id ?? r.data[0]?.id))
+    setActiveSliceId((cur) => {
+      if (cur && r.data.some((s) => s.id === cur)) return cur
+      const def = r.data.find((s) => s.is_default)
+      // 默认「全文」切片没分析、但恰有唯一一个非默认切片已分析(用例都在它下面)时，
+      // 直接落到那个有内容的切片——否则用户回到页面停在空的全文切片上点「重新生成」
+      // 会被提示"请先进行需求分析"，很懵。多个已分析切片(多人分工)时仍回默认，交给用户选。
+      if (def && !def.analysis_result) {
+        const analyzed = r.data.filter((s) => !s.is_default && s.analysis_result)
+        if (analyzed.length === 1) return analyzed[0].id
+      }
+      return def?.id ?? r.data[0]?.id
+    })
   })
   const activeSlice = slices.find((s) => s.id === activeSliceId) || slices.find((s) => s.is_default) || null
   const onDefaultSlice = !activeSlice || activeSlice.is_default
@@ -241,10 +383,16 @@ export default function RequirementDetail() {
       modules: caseDetail.modules || [],
       platforms: caseDetail.platforms || [],
       expected_result: caseDetail.expected_result || '',
+      // 覆盖项并入表单，随用例一起编辑/保存（不再逐条单独调接口）
+      covered_items: (caseDetail.covered_items || []).map((ci: any) => ({ ...ci })),
       steps: (caseDetail.steps || []).map((s: any) => ({ action: s.action || '', expected: s.expected || '', check_points: s.check_points || [] })),
     })
     setCaseEditMode(true)
   }
+
+  // 生成覆盖项 item_id（新增项无 id 时补一个，便于后续按项操作）
+  const genItemId = () =>
+    (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : `ci_${Date.now()}_${Math.random().toString(36).slice(2)}`
 
   const handleCaseSave = async () => {
     try {
@@ -255,6 +403,10 @@ export default function RequirementDetail() {
         seq: i + 1, action: s?.action || '', expected: s?.expected || '',
         check_points: s?.check_points || [],
       }))
+      // 覆盖项：过滤空名、补 item_id（保留原结构字段），随用例一起保存
+      const covered_items = (values.covered_items || [])
+        .map((ci: any) => ({ ...ci, name: (ci?.name || '').trim(), item_id: ci?.item_id || genItemId() }))
+        .filter((ci: any) => ci.name)
       await testCasesApi.update(caseDetail.id, {
         project_id: caseDetail.project_id,
         requirement_id: caseDetail.requirement_id,
@@ -262,9 +414,10 @@ export default function RequirementDetail() {
         preconditions: caseDetail.preconditions,
         ...values,
         steps,
+        covered_items,
       })
       message.success('保存成功')
-      setCaseDetail({ ...caseDetail, ...values, steps })
+      setCaseDetail({ ...caseDetail, ...values, steps, covered_items })
       setCaseEditMode(false)
       loadCases()
     } catch (err: any) {
@@ -272,6 +425,26 @@ export default function RequirementDetail() {
       message.error('保存失败')
     } finally {
       setCaseSaving(false)
+    }
+  }
+
+  // 按当前步骤(操作/预期)用 AI 重新生成每步判定锚点，回填进编辑表单（不落库，保存时才写）
+  const regenCheckpoints = async () => {
+    const steps = caseForm.getFieldValue('steps') || []
+    if (!steps.length) { message.info('请先添加步骤'); return }
+    setRegenCp(true)
+    try {
+      const r = await testCasesApi.regenCheckpoints({
+        title: caseForm.getFieldValue('title') || caseDetail?.title || '',
+        steps: steps.map((s: any) => ({ action: s?.action || '', expected: s?.expected || '', check_points: s?.check_points || [] })),
+      })
+      const cur = caseForm.getFieldValue('steps') || []
+      caseForm.setFieldValue('steps', cur.map((s: any, i: number) => ({ ...s, check_points: r.data.steps?.[i]?.check_points || s?.check_points || [] })))
+      message.success('已按步骤重新生成锚点')
+    } catch (e: any) {
+      message.error(e?.response?.data?.detail || '生成锚点失败')
+    } finally {
+      setRegenCp(false)
     }
   }
 
@@ -358,6 +531,46 @@ export default function RequirementDetail() {
     })
   }
 
+  // F4：手动新增用例
+  const openAddCase = () => {
+    addCaseForm.resetFields()
+    addCaseForm.setFieldsValue({
+      priority: 'P2', case_type: 'ui',
+      platforms: analysis?.platforms || [], modules: [],
+      steps: [{ action: '', expected: '' }],
+    })
+    setAddCaseOpen(true)
+  }
+  const handleCreateCase = async () => {
+    try {
+      const values = await addCaseForm.validateFields()
+      if (!req?.project_id) { message.error('缺少项目信息，无法新增'); return }
+      setAddCaseSaving(true)
+      await testCasesApi.create({
+        project_id: req.project_id,
+        requirement_id: id!,
+        title: values.title,
+        priority: values.priority,
+        case_type: values.case_type,
+        modules: values.modules || [],
+        platforms: values.platforms || [],
+        preconditions: (values.preconditions || []).filter((x: string) => x && x.trim()),
+        steps: (values.steps || [])
+          .filter((s: any) => s && (s.action || s.expected))
+          .map((s: any, i: number) => ({ seq: i + 1, action: s.action || '', expected: s.expected || '' })),
+        expected_result: values.expected_result,
+      })
+      message.success('用例已新增')
+      setAddCaseOpen(false)
+      loadCases()
+    } catch (err: any) {
+      if (err?.errorFields) return
+      message.error(err?.response?.data?.detail || '新增失败')
+    } finally {
+      setAddCaseSaving(false)
+    }
+  }
+
   useEffect(() => {
     requirementsApi.get(id!).then((r) => {
       setReq(r.data)
@@ -396,7 +609,14 @@ export default function RequirementDetail() {
 
   useEffect(() => {
     if (!location.hash) return
-    document.getElementById(location.hash.slice(1))?.scrollIntoView({ behavior: 'smooth' })
+    // 锚点改为切 tab：#analysis/#testcases/#defects/#code-impact/#coverage
+    const h = location.hash.slice(1)
+    const tabByHash: Record<string, string> = {
+      analysis: 'analysis', testcases: 'testcases', defects: 'defects',
+      'code-impact': 'code-impact', coverage: 'coverage',
+    }
+    if (tabByHash[h]) setActiveTab(tabByHash[h])
+    else document.getElementById(h)?.scrollIntoView({ behavior: 'smooth' })
   }, [location.hash, req])
 
   useEffect(() => { setPlatformDraft(null); setEditingPlatforms(false) }, [activeSliceId])  // 切范围时清空涉及端草稿
@@ -437,26 +657,111 @@ export default function RequirementDetail() {
     if (!activeExecs.length) return
     const t = setTimeout(async () => {
       const done: string[] = []
+      const merged = new Set(finishedCaseIds)
+      let anyNew = false
       for (const e of activeExecs) {
         try {
           const r = await executionsApi.get(e.id)
-          if (r.data.status === 'done' || r.data.status === 'failed') {
+          if (r.data.status === 'done' || r.data.status === 'failed' || r.data.status === 'canceled') {
             done.push(e.id)
             if (r.data.status === 'failed') {
               message.error(r.data.error_message || '执行失败，请重试')
+            } else if (r.data.status === 'canceled') {
+              message.warning('执行已取消')
             }
+          } else {
+            // 还在跑：看这条执行里哪些用例已出结果，让它们及时刷新(结果+按钮)，不必等整批结束
+            try {
+              const rr = await executionsApi.results(e.id)
+              for (const x of rr.data) {
+                if (x.test_case_id && !merged.has(x.test_case_id)) { merged.add(x.test_case_id); anyNew = true }
+              }
+            } catch { /* 忽略 */ }
           }
         } catch { /* 忽略，下轮重试 */ }
       }
+      if (anyNew) setFinishedCaseIds(merged)
       if (done.length) {
-        setActiveExecs((prev) => prev.filter((x) => !done.includes(x.id)))
+        setActiveExecs((prev) => {
+          const next = prev.filter((x) => !done.includes(x.id))
+          writeStoredActiveExecs(id, next)
+          if (!next.length) setFinishedCaseIds(new Set())  // 整批结束，清空
+          return next
+        })
         loadCases(); loadDefects(); reloadReq()
       } else {
+        if (anyNew) { loadCases(); loadDefects() }  // 有用例刚完成 → 刷新结果列/按钮
         setPollTick((n) => n + 1)
       }
     }, 1500)
     return () => clearTimeout(t)
   }, [activeExecs, pollTick])
+
+  // 执行日志抽屉：打开时轮询增量拉取（after=上次最大 seq）。执行结束后再拉一次收尾行即停。
+  useEffect(() => {
+    if (!logsOpen || !logsExecId) return
+    const t = setTimeout(async () => {
+      try {
+        const r = await executionsApi.logs(logsExecId, logSeqRef.current, logsCaseId)
+        const incoming = r.data.logs || []
+        if (incoming.length) {
+          logSeqRef.current = incoming[incoming.length - 1].seq
+          setLogLines((prev) => [...prev, ...incoming])
+        }
+        // 执行仍在跑（或本地还标记在跑）才续轮
+        const stillRunning = ['pending', 'running'].includes(r.data.status)
+        if (stillRunning) setLogTick((n) => n + 1)
+      } catch {
+        setLogTick((n) => n + 1)  // 瞬时失败继续轮
+      }
+    }, 1200)
+    return () => clearTimeout(t)
+  }, [logsOpen, logsExecId, logsCaseId, logTick])
+
+  const openLogs = (execId: string, caseId?: string, caseTitle?: string) => {
+    logSeqRef.current = 0
+    setLogLines([])
+    setLogsExecId(execId)
+    setLogsCaseId(caseId)
+    setLogsCaseTitle(caseTitle || '')
+    setLogsOpen(true)
+    setLogTick((n) => n + 1)
+  }
+
+  // 日志新增时自动滚到底部（跟着最新进度）
+  useEffect(() => {
+    if (logsOpen && logScrollRef.current) logScrollRef.current.scrollTop = logScrollRef.current.scrollHeight
+  }, [logLines, logsOpen])
+
+  const cancelExecution = async (execIds: string[]) => {
+    const ids = execIds.filter(Boolean)
+    if (!ids.length) return
+    const ok = await confirmDialog({ title: '取消执行', desc: '将停止后续用例，当前正在执行的用例会尽快中断。已执行的结果保留。', ok: '取消执行', danger: true })
+    if (!ok) return
+    setCanceling((prev) => { const n = new Set(prev); ids.forEach((i) => n.add(i)); return n })
+    try {
+      await Promise.all(ids.map((i) => executionsApi.cancel(i)))
+      message.success('已发送取消，正在停止…')
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || '取消失败，请重试')
+      setCanceling((prev) => { const n = new Set(prev); ids.forEach((i) => n.delete(i)); return n })
+    }
+  }
+
+  // 只取消批次里的某一条用例：批量执行时其它用例继续跑（loading 态按 caseId 记）
+  const cancelCase = async (execId: string, caseId: string) => {
+    if (!execId || !caseId) return
+    const ok = await confirmDialog({ title: '取消该用例', desc: '只停止这一条用例，批量执行的其它用例会继续。已执行的结果保留。', ok: '取消该用例', danger: true })
+    if (!ok) return
+    setCanceling((prev) => { const n = new Set(prev); n.add(caseId); return n })
+    try {
+      await executionsApi.cancelCase(execId, caseId)
+      message.success('已发送取消该用例，正在停止…')
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || '取消失败，请重试')
+      setCanceling((prev) => { const n = new Set(prev); n.delete(caseId); return n })
+    }
+  }
 
   // 覆盖前二次确认
   const confirmOverwrite = (content: string) =>
@@ -466,7 +771,7 @@ export default function RequirementDetail() {
   const runAnalyze = async (mode: 'full' | 'incremental') => {
     setModeModal((m) => ({ ...m, open: false }))
     try {
-      await pipelineApi.analyze(id!, undefined, undefined, sliceParam, mode)
+      await pipelineApi.analyze(id!, undefined, undefined, sliceParam, mode, supplementDraft.trim() || undefined)
       message.info(mode === 'incremental' ? '增量需求分析已启动' : '需求分析已启动')
       setAnalyzing(true)
     } catch (err: any) {
@@ -477,7 +782,7 @@ export default function RequirementDetail() {
   const runGenerate = async (mode: 'full' | 'incremental', regenerate: boolean) => {
     setModeModal((m) => ({ ...m, open: false }))
     try {
-      await pipelineApi.generateCases(id!, regenerate, undefined, undefined, sliceParam, mode)
+      await pipelineApi.generateCases(id!, regenerate, undefined, undefined, sliceParam, mode, supplementDraft.trim() || undefined)
       message.info(mode === 'incremental' ? '增量用例生成已启动' : '测试用例生成已启动')
       setAnalyzing(true)
       setGenerating(true)
@@ -535,7 +840,7 @@ export default function RequirementDetail() {
   const handleRegenerateCases = async () => {
     if (cases.length > 0 && !(await confirmOverwrite('重新生成会【清除现有未执行用例】并重新生成，是否继续？'))) return
     try {
-      await pipelineApi.generateCases(id!, true, undefined, undefined, sliceParam)
+      await pipelineApi.generateCases(id!, true, undefined, undefined, sliceParam, undefined, supplementDraft.trim() || undefined)
       message.info('用例重新生成已启动')
       setAnalyzing(true)
       setGenerating(true)
@@ -655,15 +960,17 @@ export default function RequirementDetail() {
 
   const categorizeCase = categorizeCaseByPlatform
   // 正在执行的用例集合(用于只置灰在跑用例) + 是否有App在跑(用于App串行)
-  const runningCaseIds = new Set(activeExecs.flatMap((e) => e.caseIds))
+  // 正在执行中的用例 = 活动执行的用例，但【剔除已出结果的】——批量执行时完成的用例即时恢复结果+按钮
+  const runningCaseIds = new Set(activeExecs.flatMap((e) => e.caseIds).filter((cid) => !finishedCaseIds.has(cid)))
   const appBusy = activeExecs.some((e) => e.isApp)
 
-  const runExecution = async (caseIds: string[], runMode: string = 'fresh', accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>) => {
+  const runExecution = async (caseIds: string[], runMode: string = 'fresh', accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>, appLogin?: Record<string, any>) => {
     if (!req || !caseIds.length) return
     const isApp = cases.some((c) => caseIds.includes(c.id) && categorizeCase(c) === 'mobile')
     try {
       const r = await executionsApi.create({
         project_id: req.project_id,
+        requirement_id: id,
         name: `${req.title} - 执行测试`,
         case_ids: caseIds,
         run_mode: runMode,
@@ -671,9 +978,15 @@ export default function RequirementDetail() {
         target_device: targetDevice ?? undefined,
         env: env || undefined,
         package_overrides: packageOverrides,
+        app_login: appLogin && Object.keys(appLogin).length ? appLogin : undefined,
         reorder: true, // 需求详情批量执行：按功能块排序，操作先于查询
       })
-      setActiveExecs((prev) => [...prev, { id: r.data.id, caseIds, isApp }])
+      setActiveExecs((prev) => {
+        const next = [...prev.filter((x) => x.id !== r.data.id), { id: r.data.id, caseIds, isApp, requirementId: id }]
+        writeStoredActiveExecs(id, next)
+        return next
+      })
+      message.success('已创建执行测试，正在后台运行')
     } catch (err: any) {
       message.error(err?.response?.data?.detail || '执行测试启动失败，请稍后重试')
     }
@@ -684,13 +997,13 @@ export default function RequirementDetail() {
     setExecModalOpen(true)
   }
 
-  const handleExecuteConfirm = async (runMode: string, accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>) => {
+  const handleExecuteConfirm = async (runMode: string, accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>, appLogin?: Record<string, any>) => {
     // 排除正在执行中的用例(避免重复触发)
     const targetCases = cases.filter((c) => pendingCaseIds.includes(c.id) && !runningCaseIds.has(c.id))
-    // 排除无法登录的 web 用例(端未接入框架)
-    const blockedCount = targetCases.filter((c) => isLoginBlocked(c)).length
-    if (blockedCount) message.warning(`${blockedCount} 条用例所属端无法登录(未接入自动化框架)，已跳过`)
-    let executableCases = targetCases.filter((c) => isAutoExecutable(categorizeCase(c)) && !isLoginBlocked(c)) // web/api 可并发
+    // 框架未覆盖的 web 端(如 web-admin)不再硬拦截：降级执行(临时账号/本地登录态)，仅提示
+    const degradedCount = targetCases.filter((c) => isLoginBlocked(c)).length
+    if (degradedCount) message.info(`${degradedCount} 条用例所属端未接入自动化框架，将降级执行(如未配登录态可能失败)`)
+    let executableCases = targetCases.filter((c) => isAutoExecutable(categorizeCase(c))) // web/api 可并发
     const mobileCases = targetCases.filter((c) => categorizeCase(c) === 'mobile')
     if (mobileCases.length) {
       try {
@@ -708,8 +1021,33 @@ export default function RequirementDetail() {
       return
     }
     setExecModalOpen(false)
-    await runExecution(executableCases.map((c) => c.id), runMode, accountOverrides, targetDevice, env, packageOverrides)
+    await runExecution(executableCases.map((c) => c.id), runMode, accountOverrides, targetDevice, env, packageOverrides, appLogin)
   }
+
+  // 「二级功能」= 用例关联问题点所属的功能块(feature，粗粒度)；老数据无 feature 时回退问题点描述
+  const caseIssuePoints: any[] = analysis?.issue_points || []
+  const secondaryFeature = (row: any): string => {
+    // 优先用用例自带的 secondary_feature(后端从需求原文按页面级提取并回填)——脑图也是这个口径。
+    if (row?.secondary_feature) return String(row.secondary_feature)
+    const sip = row?.source_issue_point
+    if (!sip) return ''
+    const ip = caseIssuePoints.find((p: any) => p.issue_id === sip || p.description === sip)
+    // 匹配不到就归「未归类功能」，绝不把原始 issue_id(ISSUE-x)当二级功能名展示。
+    return ip?.feature || ip?.description || ''
+  }
+  const NO_FEATURE = '未归类功能'
+  const secondaryFeatureLabel = (row: any): string => secondaryFeature(row) || NO_FEATURE
+  // 「二级功能」列筛选项：用例上出现过的功能点去重
+  const secondaryFeatureOptions = (() => {
+    const seen = new Set<string>()
+    const opts: { value: string; label: string }[] = []
+    cases.forEach((c) => {
+      const f = secondaryFeatureLabel(c)
+      if (seen.has(f)) return
+      seen.add(f); opts.push({ value: f, label: f })
+    })
+    return opts
+  })()
 
   const caseColumns = [
     { title: '用例ID', dataIndex: 'case_id', key: 'case_id', width: 110 },
@@ -718,6 +1056,18 @@ export default function RequirementDetail() {
       render: (v: string, row: any) => (
         <a className="row-title" onClick={() => openCaseDetail(row)}>{v}</a>
       ),
+    },
+    {
+      title: '二级功能', key: 'secondary_feature', width: 170, ellipsis: true,
+      filterIcon,
+      filterDropdown: (p: any) => <ColFilter title="按二级功能筛选" scroll options={secondaryFeatureOptions} {...p} />,
+      onFilter: (value: any, row: any) => secondaryFeatureLabel(row) === value,
+      render: (_: any, row: any) => {
+        const f = secondaryFeature(row)
+        return f
+          ? <Tooltip title={f}><span style={{ fontSize: 12.5, color: '#475569' }}>{f}</span></Tooltip>
+          : <span style={{ color: '#CBD5E1' }}>—</span>
+      },
     },
     {
       title: '模块', dataIndex: 'modules', key: 'modules', width: 130, align: 'center' as const,
@@ -772,6 +1122,24 @@ export default function RequirementDetail() {
     {
       title: '操作', key: 'action', width: 270, fixed: 'right' as const, align: 'center' as const,
       render: (_: any, row: any) => {
+        // 测试中：只显示「测试中 · 查看日志 · 取消测试」，隐藏手动测试/删除，把腾出的位置给日志和取消按钮
+        if (runningCaseIds.has(row.id)) {
+          const execId = activeExecs.find((e) => e.caseIds.includes(row.id))?.id
+          return (
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8, flexWrap: 'nowrap' }}>
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: '#1677ff', fontSize: 12, fontWeight: 600, whiteSpace: 'nowrap' }}>
+                <Badge status="processing" />测试中…
+              </span>
+              <Button size="small" style={{ fontSize: 12 }}
+                icon={<span className="ms" style={{ fontSize: 14 }}>description</span>}
+                onClick={() => execId && openLogs(execId, row.id, row.title)}>查看日志</Button>
+              <Button size="small" danger style={{ fontSize: 12 }}
+                loading={canceling.has(row.id)}
+                icon={<span className="ms" style={{ fontSize: 14 }}>stop_circle</span>}
+                onClick={() => execId && cancelCase(execId, row.id)}>取消测试</Button>
+            </div>
+          )
+        }
         const manual = row.last_status === 'manual_passed' ? 'pass' : row.last_status === 'manual_failed' ? 'fail' : null
         const manualLabel = manual === 'pass' ? '通过' : manual === 'fail' ? '失败' : '结果'
         const rightStyle = manual === 'pass'
@@ -781,24 +1149,27 @@ export default function RequirementDetail() {
           : { color: '#94A3B8', background: '#fff' }
         return (
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, flexWrap: 'nowrap' }}>
-            <Tooltip title={isLoginBlocked(row) ? `${(row.platforms || []).join('、')} 未接入自动化框架(地址无效/无法登录)，无法执行` : ''}>
+            <Tooltip title={isLoginBlocked(row) ? `${(row.platforms || []).join('、')} 未接入自动化框架，将降级执行（可在执行弹框填临时账号，或用已抓取的本地登录态）` : ''}>
               <Button type="link" size="small" style={{ padding: 0, fontSize: 12, whiteSpace: 'nowrap' }}
-                disabled={runningCaseIds.has(row.id) || isLoginBlocked(row)}
                 onClick={() => openExecModal([row.id])}>
-                {runningCaseIds.has(row.id) ? '测试中…' : '执行测试'}
+                执行测试
               </Button>
             </Tooltip>
             <Dropdown menu={{ items: [
-              { key: 'pass', label: <span style={{ color: '#128A43', fontSize: 12 }}>手动测试通过</span>, onClick: () => handleManualPass(row) },
-              { key: 'fail', label: <span style={{ color: '#C9332B', fontSize: 12 }}>手动测试失败（生成缺陷）</span>, onClick: () => handleManualFail(row) },
+              { key: 'pass', label: <span style={{ color: '#128A43', fontSize: 12, whiteSpace: 'nowrap' }}>手动测试通过</span>, onClick: () => handleManualPass(row) },
+              { key: 'fail', label: <span style={{ color: '#C9332B', fontSize: 12, whiteSpace: 'nowrap' }}>手动测试失败（生成缺陷）</span>, onClick: () => handleManualFail(row) },
             ] }}>
-              <span style={{ display: 'inline-flex', alignItems: 'center', border: '1px solid #E7ECF0', borderRadius: 8, overflow: 'hidden', height: 28, cursor: 'pointer' }}>
+              <span style={{ display: 'inline-flex', flex: '0 0 auto', alignItems: 'center', border: '1px solid #E7ECF0', borderRadius: 8, overflow: 'hidden', height: 28, cursor: 'pointer', whiteSpace: 'nowrap' }}>
                 <span style={{ padding: '0 10px', fontSize: 11.5, fontWeight: 600, color: '#64748B', background: '#F7F9FB', borderRight: '1px solid #E7ECF0', whiteSpace: 'nowrap', lineHeight: '28px' }}>手动测试</span>
-                <span style={{ display: 'inline-flex', alignItems: 'center', gap: 3, padding: '0 9px', height: '100%', fontSize: 11.5, fontWeight: 600, ...rightStyle }}>
+                <span style={{ display: 'inline-flex', flex: '0 0 auto', alignItems: 'center', gap: 3, padding: '0 9px', height: '100%', fontSize: 11.5, fontWeight: 600, whiteSpace: 'nowrap', ...rightStyle }}>
                   {manualLabel}<span className="ms" style={{ fontSize: 13 }}>expand_more</span>
                 </span>
               </span>
             </Dropdown>
+            <Tooltip title="维护本用例依赖的测试数据（${别名.字段} 的实际值）">
+              <Button type="link" size="small" style={{ padding: 0, fontSize: 12, whiteSpace: 'nowrap' }}
+                onClick={() => setDataReqCase({ caseId: row.case_id, title: row.title })}>数据</Button>
+            </Tooltip>
             <Button type="link" size="small" danger style={{ padding: 0, fontSize: 12, whiteSpace: 'nowrap' }}
               onClick={async () => { if (await confirmDialog({ title: '删除用例', desc: '删除后将进入用例库回收站，确认删除？', ok: '删除', danger: true })) handleDeleteCase(row) }}>删除</Button>
           </div>
@@ -886,6 +1257,45 @@ export default function RequirementDetail() {
           <Empty description="加载中..." />
         )}
       </Card>
+
+      {/* 发布建议（方案 13.3） */}
+      {id && <ReleaseReportCard requirementId={id} />}
+
+      {/* 需求详情下的 tab：需求分析 / 代码分析 / 测试用例 / 测试缺陷 / 覆盖矩阵 */}
+      <style>{PILL_TABBAR_CSS}</style>
+      <Tabs
+        activeKey={activeTab}
+        onChange={setActiveTab}
+        style={{ marginTop: 4 }}
+        renderTabBar={() => {
+          const meta: { key: string; label: string; badge: JSX.Element | null }[] = [
+            { key: 'analysis', label: '需求分析', badge: allConfirmed ? <span className="tp-pill-dot" title="分析已确认" /> : null },
+            { key: 'code-impact', label: '代码分析', badge: null },
+            { key: 'testcases', label: '测试用例', badge: cases.length ? <span className="tp-pill-count brand">{cases.length}</span> : null },
+            { key: 'defects', label: '测试缺陷', badge: defectsData.length ? <span className="tp-pill-count err">{defectsData.length}</span> : null },
+            { key: 'coverage', label: '覆盖矩阵', badge: null },
+          ]
+          return (
+            <div className="tp-pillbar-scroll">
+              <div className="tp-pillbar" role="tablist">
+                {meta.map((t) => (
+                  <button key={t.key} type="button" role="tab" aria-selected={activeTab === t.key}
+                    className="tp-pill" onClick={() => setActiveTab(t.key)}>
+                    {TAB_ICONS[t.key]}<span>{t.label}</span>{t.badge}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )
+        }}
+        items={[
+        {
+          key: 'analysis',
+          label: '需求分析',
+          children: (
+            <>
+      {/* 历史经验召回（方案 6.2）：并入需求分析 tab；无命中时组件内部自隐藏 */}
+      {id && <ExperiencePanel requirementId={id} />}
 
       {/* 需求分析 */}
       <Card
@@ -1026,6 +1436,20 @@ export default function RequirementDetail() {
               </div>
             )
           })()}
+          {/* F6：人工补充需求点（选填），参与重新分析/生成 */}
+          <div style={{ marginBottom: 18, padding: '12px 14px', borderRadius: 10, border: '1px dashed #D9E0E6', background: '#FBFCFD' }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+              <span className="ms" style={{ fontSize: 15, color: '#64748B' }}>edit_note</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: '#334155' }}>人工补充需求点</span>
+              <span style={{ fontSize: 12, color: '#94A3B8' }}>选填 · 内容会随「重新分析 / 生成用例」一并交给 AI，用于补足识别遗漏</span>
+            </div>
+            <Input.TextArea
+              value={supplementDraft}
+              onChange={(e) => setSupplementDraft(e.target.value)}
+              autoSize={{ minRows: 2, maxRows: 6 }}
+              placeholder="例如：补充边界场景、异常分支、遗漏的端或权限要求等，每行一条。留空则不影响原有分析。"
+            />
+          </div>
           <div style={{ maxHeight: 560, overflowY: 'auto', paddingRight: 6 }}>
           {analysisIssuePoints.map((ip: any, idx: number) => (
             <div key={ip.issue_id} style={{ marginBottom: idx === analysisIssuePoints.length - 1 ? 0 : 22 }}>
@@ -1059,15 +1483,47 @@ export default function RequirementDetail() {
           </>
         )}
       </Card>
-
-      {/* 测试用例 */}
+            </>
+          ),
+        },
+        {
+          key: 'code-impact',
+          label: '代码分析',
+          children: id ? (
+            <CodeImpact
+              embedded
+              requirementId={id}
+              onCasesGenerated={() => { loadCases(); reloadReq(); setActiveTab('testcases') }}
+            />
+          ) : null,
+        },
+        {
+          key: 'testcases',
+          label: '测试用例',
+          children: (
       <Card
         id="testcases"
         title="测试用例"
         bordered={false}
         style={{ ...PANEL_CARD_STYLE, marginBottom: 16 }}
         extra={
-          cases.length > 0 ? (
+          <Space size={8} wrap>
+            {cases.length > 0 && (
+              <Segmented
+                size="small"
+                value={caseViewMode}
+                onChange={(v) => setCaseViewMode(v as 'flat' | 'group' | 'mindmap')}
+                options={[
+                  { label: '平铺', value: 'flat' },
+                  { label: '分组', value: 'group' },
+                  { label: '脑图', value: 'mindmap' },
+                ]}
+              />
+            )}
+            {analysis && cases.length > 0 && (
+              <Button onClick={openAddCase} icon={<span className="ms" style={{ fontSize: 16 }}>add</span>}>新增用例</Button>
+            )}
+            {cases.length > 0 && (
             <Space size={8}>
               {isAdmin && (
                 <button className="rd-ghost-btn" onClick={handleCoverage} style={GHOST_BTN}>
@@ -1110,14 +1566,29 @@ export default function RequirementDetail() {
                 执行测试{selectedRowKeys.length ? `（${selectedRowKeys.length}条）` : '（全量）'}
                 {activeExecs.length > 0 ? `· ${runningCaseIds.size} 在跑` : ''}
               </Button>
+              {activeExecs.length > 0 && (
+                <>
+                  <Button icon={<span className="ms" style={{ fontSize: 16 }}>description</span>}
+                    onClick={() => openLogs(activeExecs[0].id)}>
+                    查看执行日志
+                  </Button>
+                  <Button danger loading={activeExecs.some((e) => canceling.has(e.id))}
+                    onClick={() => cancelExecution(activeExecs.map((e) => e.id))}>
+                    取消执行
+                  </Button>
+                </>
+              )}
             </Space>
-          ) : (
-            analysis && (
-              <Button onClick={handleGenerateCases} loading={generating} type="primary">
-                生成用例
-              </Button>
-            )
-          )
+            )}
+            {cases.length === 0 && analysis && (
+              <>
+                <Button onClick={openAddCase} icon={<span className="ms" style={{ fontSize: 16 }}>add</span>}>新增用例</Button>
+                <Button onClick={handleGenerateCases} loading={generating} type="primary">
+                  生成用例
+                </Button>
+              </>
+            )}
+          </Space>
         }
       >
         {analysis?.generation_vision_warning && (
@@ -1202,21 +1673,81 @@ export default function RequirementDetail() {
               .case-list-table .ant-table-tbody > tr > td{vertical-align:middle}
               .rd-ghost-btn:hover:not(:disabled){background:#F3F6F8;border-color:#D5DDE4}
               .rd-brand-btn:hover:not(:disabled){opacity:.88}`}</style>
-            <Table
-              className="case-list-table"
-              rowKey="id"
-              dataSource={cases.filter((c) => c.review_status !== 'pending_review')}
-              columns={caseColumns}
-              rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys as string[]) }}
-              scroll={{ x: 1200 }}
-              pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }}
-            />
+            {(() => {
+              const visibleCases = cases.filter((c) => c.review_status !== 'pending_review')
+
+              // F3 脑图视图：需求 → 功能点 → 用例，可内联改名/删除
+              if (caseViewMode === 'mindmap') {
+                return (
+                  <CaseMindMap
+                    reqTitle={req?.title || ''}
+                    cases={visibleCases}
+                    issuePoints={analysisIssuePoints}
+                    onRename={(cid, title) => testCasesApi.update(cid, { title }).then(() => { loadCases() })}
+                    onUpdate={(cid, patch) => testCasesApi.update(cid, patch).then(() => { loadCases() })}
+                    onDelete={handleDeleteCase}
+                    onOpen={openCaseDetail}
+                  />
+                )
+              }
+
+              // F2 分组视图：按「二级功能」聚合、可折叠
+              if (caseViewMode === 'group') {
+                const groups: Record<string, any[]> = {}
+                visibleCases.forEach((c) => {
+                  const f = secondaryFeatureLabel(c);
+                  (groups[f] ||= []).push(c)
+                })
+                const gkeys = Object.keys(groups)
+                if (!gkeys.length) return <Empty description="暂无用例" />
+                return (
+                  <Collapse defaultActiveKey={gkeys} items={gkeys.map((m) => ({
+                    key: m,
+                    label: (
+                      <span style={{ fontWeight: 600, color: '#334155' }}>
+                        {m}
+                        <span style={{ marginLeft: 8, fontSize: 12, fontWeight: 500, color: '#94A3B8' }}>{groups[m].length} 条</span>
+                      </span>
+                    ),
+                    children: (
+                      <Table
+                        className="case-list-table"
+                        rowKey="id"
+                        size="small"
+                        dataSource={groups[m]}
+                        columns={caseColumns}
+                        rowSelection={{ selectedRowKeys, onChange: (ks) => setSelectedRowKeys(ks as string[]) }}
+                        scroll={{ x: 1200 }}
+                        pagination={false}
+                      />
+                    ),
+                  }))} />
+                )
+              }
+
+              // 平铺视图（默认）
+              return (
+                <Table
+                  className="case-list-table"
+                  rowKey="id"
+                  dataSource={visibleCases}
+                  columns={caseColumns}
+                  rowSelection={{ selectedRowKeys, onChange: (keys) => setSelectedRowKeys(keys as string[]) }}
+                  scroll={{ x: 1200 }}
+                  pagination={{ defaultPageSize: 10, showSizeChanger: true, pageSizeOptions: [10, 20, 50, 100], showTotal: (total) => `共 ${total} 条` }}
+                />
+              )
+            })()}
 
           </>
         )}
       </Card>
-
-      {/* 缺陷复核 */}
+          ),
+        },
+        {
+          key: 'defects',
+          label: '测试缺陷',
+          children: (
       <Card id="defects" title="缺陷复核" bordered={false} style={PANEL_CARD_STYLE}>
         {defectsData.length === 0 ? (
           <Empty description="暂无缺陷" />
@@ -1228,13 +1759,22 @@ export default function RequirementDetail() {
           />
         )}
       </Card>
+          ),
+        },
+        {
+          key: 'coverage',
+          label: '覆盖矩阵',
+          children: id ? <CoverageMatrix embedded requirementId={id} /> : null,
+        },
+        ]}
+      />
 
       {/* 最近执行结果 Drawer */}
       <Drawer
         title={lastResultCase ? `${lastResultCase.case_id} — 最近执行结果` : ''}
         open={!!lastResultCase}
         onClose={() => setLastResultCase(null)}
-        width={480}
+        width={560}
       >
         {lastResultLoading ? (
           <div style={{ textAlign: 'center', padding: 40 }}><Typography.Text type="secondary">加载中…</Typography.Text></div>
@@ -1286,27 +1826,80 @@ export default function RequirementDetail() {
                   </div>
                 </Descriptions.Item>
               )}
+              {Array.isArray(r.checked_points) && r.checked_points.length > 0 && (
+                <Descriptions.Item label="覆盖项验证">
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    <Image.PreviewGroup>
+                      {r.checked_points.map((cp: any, ci: number) => {
+                        const stColor = cp.status === 'passed' ? 'success' : cp.status === 'failed' ? 'error' : cp.status === 'blocked' ? 'warning' : 'default'
+                        const stLabel = cp.status === 'passed' ? '通过' : cp.status === 'failed' ? '失败' : cp.status === 'blocked' ? '阻塞' : '未验证'
+                        return (
+                          <div key={ci} style={{ display: 'flex', gap: 10, alignItems: 'flex-start', paddingBottom: 8, borderBottom: '1px solid #F1F4F6' }}>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                                <span style={{ fontSize: 13, fontWeight: 600, color: '#0F172A' }}>{cp.covered_item_name || cp.covered_item || cp.item_id}</span>
+                                <Tag color={stColor} style={{ marginInlineEnd: 0 }}>{stLabel}</Tag>
+                              </div>
+                              {cp.evidence && <div style={{ fontSize: 12, color: '#64748B', marginTop: 2 }}>证据：{cp.evidence}</div>}
+                            </div>
+                            {cp.screenshot_url && (
+                              <Image src={cp.screenshot_url} width={54} height={116} style={{ flex: 'none', objectFit: 'cover', borderRadius: 6, border: '1px solid #ECEFF2', cursor: 'pointer' }} />
+                            )}
+                          </div>
+                        )
+                      })}
+                    </Image.PreviewGroup>
+                  </div>
+                </Descriptions.Item>
+              )}
+              {Array.isArray(r.actual_visited_pages) && r.actual_visited_pages.length > 0 && (
+                <Descriptions.Item label="实际访问页面">
+                  {r.actual_visited_pages.map((p: any, i: number) => (
+                    <Tag key={i}>{p.page_name || p.url}</Tag>
+                  ))}
+                </Descriptions.Item>
+              )}
+              {Array.isArray(r.actual_api_calls) && r.actual_api_calls.length > 0 && (
+                <Descriptions.Item label="实际接口调用">
+                  <div style={{ fontSize: 12, fontFamily: MONO_FONT }}>
+                    {r.actual_api_calls.map((a: any, i: number) => (
+                      <div key={i}><Tag color="blue">{a.method || 'GET'}</Tag>{a.url} <Tag color={(a.status ?? 0) < 400 ? 'success' : 'error'}>{a.status ?? '—'}</Tag></div>
+                    ))}
+                  </div>
+                </Descriptions.Item>
+              )}
               {r.api_trace && (
-                <>
-                  <Descriptions.Item label="x-hubble-trace-id">
-                    <Typography.Text copyable style={{ fontSize: 12, fontFamily: MONO_FONT }}>{r.api_trace.trace_id || '—'}</Typography.Text>
-                  </Descriptions.Item>
-                  <Descriptions.Item label="接口请求">
-                    <div style={{ fontSize: 12, marginBottom: 4 }}>
-                      <Tag color="blue">{r.api_trace.request?.method || 'GET'}</Tag>
-                      <Typography.Text style={{ fontFamily: MONO_FONT }}>{r.api_trace.request?.url}</Typography.Text>
-                    </div>
-                    <pre style={{ margin: 0, padding: 10, background: '#0F172A', color: '#CBD5E1', borderRadius: 8, fontSize: 11.5, overflowX: 'auto', maxHeight: 200 }}>
-{JSON.stringify(r.api_trace.request?.body ?? {}, null, 2)}</pre>
-                  </Descriptions.Item>
-                  <Descriptions.Item label="接口返回">
-                    <div style={{ fontSize: 12, marginBottom: 4 }}>
-                      <Tag color={(r.api_trace.response?.status ?? 0) < 400 ? 'success' : 'error'}>HTTP {r.api_trace.response?.status ?? '—'}</Tag>
-                    </div>
-                    <pre style={{ margin: 0, padding: 10, background: '#0F172A', color: '#CBD5E1', borderRadius: 8, fontSize: 11.5, overflowX: 'auto', maxHeight: 240 }}>
-{JSON.stringify(r.api_trace.response?.body ?? {}, null, 2)}</pre>
-                  </Descriptions.Item>
-                </>
+                (() => {
+                  const req = r.api_trace.request || r.api_trace.requests?.[0]
+                  const resp = r.api_trace.response || (r.api_trace.responses && r.api_trace.responses[r.api_trace.responses.length - 1])
+                  const traceId =
+                    r.api_trace.trace_id ||
+                    resp?.headers?.['x-hubble-trace-id'] ||
+                    resp?.headers?.['X-Hubble-Trace-Id'] ||
+                    '—'
+                  return (
+                    <>
+                      <Descriptions.Item label="x-hubble-trace-id">
+                        <Typography.Text copyable style={{ fontSize: 12, fontFamily: MONO_FONT, wordBreak: 'break-all' }}>{traceId}</Typography.Text>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="接口请求">
+                        <div style={{ fontSize: 12, marginBottom: 4 }}>
+                          <Tag color="blue">{req?.method || 'GET'}</Tag>
+                          <Typography.Text style={{ fontFamily: MONO_FONT, wordBreak: 'break-all' }}>{req?.url || '—'}</Typography.Text>
+                        </div>
+                        <pre style={{ margin: 0, padding: 10, background: '#0F172A', color: '#CBD5E1', borderRadius: 8, fontSize: 11.5, overflowX: 'auto', maxHeight: 200, width: '100%', boxSizing: 'border-box', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+{JSON.stringify(req?.body ?? {}, null, 2)}</pre>
+                      </Descriptions.Item>
+                      <Descriptions.Item label="接口返回">
+                        <div style={{ fontSize: 12, marginBottom: 4 }}>
+                          <Tag color={(resp?.status ?? 0) < 400 ? 'success' : 'error'}>HTTP {resp?.status ?? '—'}</Tag>
+                        </div>
+                        <pre style={{ margin: 0, padding: 10, background: '#0F172A', color: '#CBD5E1', borderRadius: 8, fontSize: 11.5, overflowX: 'auto', maxHeight: 240, width: '100%', boxSizing: 'border-box', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+{JSON.stringify(resp?.body ?? {}, null, 2)}</pre>
+                      </Descriptions.Item>
+                    </>
+                  )
+                })()
               )}
               <Descriptions.Item label="执行 ID">
                 <Typography.Text copyable style={{ fontSize: 12 }}>{r.execution_id}</Typography.Text>
@@ -1316,18 +1909,176 @@ export default function RequirementDetail() {
         })()}
       </Drawer>
 
+      {/* 执行实时日志抽屉（终端风格 + 状态 + 自动滚动） */}
+      {(() => {
+        const running = !!logsExecId && activeExecs.some((e) => e.id === logsExecId)
+        return (
+          <Drawer
+            title={
+              <span style={{ display: 'inline-flex', alignItems: 'center', gap: 8, maxWidth: running ? 300 : 380, minWidth: 0 }}>
+                <span className="ms" style={{ fontSize: 18, color: '#64748B', flex: 'none' }}>terminal</span>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                  {logsCaseTitle ? `执行日志 · ${logsCaseTitle}` : '执行日志'}
+                </span>
+                <span style={{ flex: 'none', display: 'inline-flex', alignItems: 'center', gap: 5, padding: '1px 9px', borderRadius: 999, fontSize: 11.5, fontWeight: 600,
+                  color: running ? '#1D4ED8' : '#64748B', background: running ? '#EFF4FF' : '#F1F5F9' }}>
+                  {running && <Badge status="processing" />}
+                  {running ? '执行中' : '已结束'}
+                </span>
+              </span>
+            }
+            placement="right"
+            width={600}
+            open={logsOpen}
+            onClose={() => setLogsOpen(false)}
+            styles={{ body: { padding: 0, background: '#0B1220' } }}
+            extra={
+              running ? (
+                // 抽屉是按某条用例打开的(logsCaseId)：这里只取消这一条；无用例上下文才取消整批
+                logsCaseId ? (
+                  <Button danger size="small" loading={canceling.has(logsCaseId)}
+                    icon={<span className="ms" style={{ fontSize: 14 }}>stop_circle</span>}
+                    onClick={() => logsExecId && cancelCase(logsExecId, logsCaseId)}>
+                    取消该用例
+                  </Button>
+                ) : (
+                  <Button danger size="small" loading={!!logsExecId && canceling.has(logsExecId)}
+                    icon={<span className="ms" style={{ fontSize: 14 }}>stop_circle</span>}
+                    onClick={() => logsExecId && cancelExecution([logsExecId])}>
+                    取消执行
+                  </Button>
+                )
+              ) : null
+            }
+          >
+            <div ref={logScrollRef}
+              style={{ height: '100%', overflowY: 'auto', padding: '14px 16px', boxSizing: 'border-box',
+                fontSize: 12.5, lineHeight: 1.85, fontFamily: 'ui-monospace, Menlo, Consolas, monospace' }}>
+              {logLines.length === 0 ? (
+                <div style={{ color: '#64748B', display: 'flex', alignItems: 'center', gap: 8, paddingTop: 6 }}>
+                  {running && <Badge status="processing" />}
+                  {running ? '等待日志输出，执行中会实时刷新…' : '暂无日志'}
+                </div>
+              ) : (
+                logLines.map((l) => {
+                  const warn = l.level === 'warn'
+                  return (
+                    <div key={l.seq} style={{ display: 'flex', gap: 10, whiteSpace: 'pre-wrap', wordBreak: 'break-word', padding: '1px 0' }}>
+                      <span style={{ flex: 'none', color: '#475569', fontVariantNumeric: 'tabular-nums' }}>
+                        {new Date(l.ts * 1000).toLocaleTimeString('zh-CN', { hour12: false })}
+                      </span>
+                      <span style={{ color: warn ? '#FBBF24' : '#CBD5E1' }}>
+                        {warn && <span style={{ marginRight: 4 }}>⚠</span>}{l.text}
+                      </span>
+                    </div>
+                  )
+                })
+              )}
+            </div>
+          </Drawer>
+        )
+      })()}
+
       {/* 执行测试配置弹窗 */}
       <ExecConfigModal
         open={execModalOpen}
         cases={cases.filter((c) => pendingCaseIds.includes(c.id))}
         categorizeCase={categorizeCase}
-        execApiBaseUrl={execApiBaseUrl}
-        setExecApiBaseUrl={setExecApiBaseUrl}
         onCancel={() => setExecModalOpen(false)}
         onConfirm={handleExecuteConfirm}
       />
 
+      {/* 用例数据要求维护（测试数据准备 MVP-0） */}
+      <DataRequirementModal
+        open={!!dataReqCase}
+        caseId={dataReqCase?.caseId || ''}
+        caseTitle={dataReqCase?.title}
+        onClose={() => setDataReqCase(null)}
+      />
+
       {/* 新建负责范围(切片) */}
+      {/* F4：手动新增用例 */}
+      <Modal
+        title="新增用例"
+        open={addCaseOpen}
+        onCancel={() => setAddCaseOpen(false)}
+        onOk={handleCreateCase}
+        okText="新增"
+        cancelText="取消"
+        confirmLoading={addCaseSaving}
+        width={680}
+        destroyOnClose
+      >
+        <Form form={addCaseForm} layout="vertical">
+          <Form.Item name="title" label="用例标题" rules={[{ required: true, message: '请输入用例标题' }]}>
+            <Input placeholder="一句话描述测试目标" />
+          </Form.Item>
+          <Row gutter={16}>
+            <Col span={8}>
+              <Form.Item name="priority" label="优先级" rules={[{ required: true }]}>
+                <Select options={[{ value: 'P0', label: 'P0' }, { value: 'P1', label: 'P1' }, { value: 'P2', label: 'P2' }]} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="case_type" label="场景类型" rules={[{ required: true }]}>
+                <Select options={categoryOptions.map((o) => ({ value: o.key, label: o.label }))} />
+              </Form.Item>
+            </Col>
+            <Col span={8}>
+              <Form.Item name="modules" label="模块">
+                <Select mode="multiple" allowClear options={moduleOptions.map((o) => ({ value: o.key, label: o.label }))} />
+              </Form.Item>
+            </Col>
+          </Row>
+          <Form.Item name="platforms" label="适用端">
+            <Select mode="multiple" allowClear options={platformOptions.map((o) => ({ value: o.key, label: o.label }))} />
+          </Form.Item>
+          <Form.Item name="expected_result" label="预期结果">
+            <Input.TextArea autoSize={{ minRows: 1, maxRows: 3 }} placeholder="整体预期（可选）" />
+          </Form.Item>
+          <Form.List
+            name="steps"
+            rules={[{
+              validator: async (_, steps) => {
+                if (!steps || !steps.some((s: any) => s?.action && s.action.trim())) {
+                  return Promise.reject(new Error('请至少填写一个测试步骤（操作必填）'))
+                }
+              },
+            }]}
+          >
+            {(fields, { add, remove }, { errors }) => (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 500, marginBottom: 8 }}>
+                  测试步骤 <span style={{ color: '#EF4444' }}>*</span>
+                </div>
+                {fields.map((field, idx) => (
+                  <Row key={field.key} gutter={8} align="top" style={{ marginBottom: 8 }}>
+                    <Col span={2} style={{ textAlign: 'center', color: '#94A3B8', paddingTop: 6 }}>{idx + 1}</Col>
+                    <Col span={10}>
+                      <Form.Item name={[field.name, 'action']} noStyle
+                        rules={[{ required: true, message: '请输入操作' }]}>
+                        <Input placeholder="操作" />
+                      </Form.Item>
+                    </Col>
+                    <Col span={10}>
+                      <Form.Item name={[field.name, 'expected']} noStyle>
+                        <Input placeholder="预期" />
+                      </Form.Item>
+                    </Col>
+                    <Col span={2} style={{ textAlign: 'center', paddingTop: 6 }}>
+                      <span className="ms" onClick={() => remove(field.name)}
+                        style={{ fontSize: 18, color: '#EF4444', cursor: 'pointer' }}>remove_circle_outline</span>
+                    </Col>
+                  </Row>
+                ))}
+                <Button size="small" type="dashed" onClick={() => add({ action: '', expected: '' })} block>+ 添加步骤</Button>
+                <Form.ErrorList errors={errors} />
+              </div>
+            )}
+          </Form.List>
+        </Form>
+      </Modal>
+
       <Modal
         title="新建负责范围"
         open={sliceModalOpen}
@@ -1420,6 +2171,12 @@ export default function RequirementDetail() {
                   </div>
                 ))}
               </div>
+              <CaseCoveredItemsBlock
+                caseId={caseDetail.id}
+                items={caseDetail.covered_items}
+                priority={caseDetail.priority}
+                onChange={(items) => { setCaseDetail({ ...caseDetail, covered_items: items }); loadCases() }}
+              />
               {steps.length > 0 && (
                 <div>
                   <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A', marginBottom: 16 }}>测试步骤</div>
@@ -1478,10 +2235,36 @@ export default function RequirementDetail() {
             <Form.Item name="expected_result" label="预期结果">
               <Input.TextArea rows={3} style={{ fontSize: 13 }} />
             </Form.Item>
+            <Form.Item label={<span>覆盖项 <span style={{ fontSize: 12, fontWeight: 400, color: '#94A3B8' }}>（这条用例验证的质量点，随用例一起保存）</span></span>}>
+              <Form.List name="covered_items">
+                {(fields, { add, remove }) => (
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+                    {fields.length === 0 && (
+                      <span style={{ fontSize: 12.5, color: '#B0BAC4' }}>暂无覆盖项，可点下方新增</span>
+                    )}
+                    {fields.map((field) => (
+                      <div key={field.key} style={{ display: 'flex', gap: 8, alignItems: 'center', border: '1px solid #ECEFF2', borderRadius: 10, padding: '4px 8px 4px 12px', background: '#fff' }}>
+                        <span style={{ width: 7, height: 7, flex: 'none', borderRadius: '50%', background: '#CBD5E1' }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <Form.Item name={[field.name, 'name']} noStyle rules={[{ required: true, message: '请填写覆盖项名称' }]}>
+                            <Input variant="borderless" placeholder="覆盖项名称" style={{ width: '100%', fontSize: 13, padding: 0, color: '#0F172A' }} />
+                          </Form.Item>
+                        </div>
+                        <span onClick={() => remove(field.name)} style={{ flex: 'none', color: '#C9332B', fontSize: 12, cursor: 'pointer', padding: '0 4px' }}>删除</span>
+                      </div>
+                    ))}
+                    <div onClick={() => add({ name: '', source: 'tester_added' })} style={{ height: 38, border: '1.5px dashed #E7ECF0', borderRadius: 10, fontSize: 13, color: '#94A3B8', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6, cursor: 'pointer' }}>+ 新增覆盖项</div>
+                  </div>
+                )}
+              </Form.List>
+            </Form.Item>
             <Form.Item label="测试步骤">
               <Form.List name="steps">
                 {(fields, { add, remove, move }) => (
                   <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+                    <div style={{ display: 'flex', justifyContent: 'flex-end' }}>
+                      <Button size="small" loading={regenCp} onClick={regenCheckpoints}>按步骤重新生成锚点</Button>
+                    </div>
                     {fields.map((field, idx) => (
                       <div key={field.key}
                         onDragOver={(e) => { e.preventDefault() }}
@@ -1498,8 +2281,38 @@ export default function RequirementDetail() {
                             <Input.TextArea variant="borderless" placeholder="操作步骤" autoSize={{ minRows: 1 }} style={{ padding: '10px 14px', fontSize: 13, borderBottom: '1px solid #F1F4F6', borderRadius: 0, resize: 'none' }} />
                           </Form.Item>
                           <Form.Item name={[field.name, 'expected']} noStyle>
-                            <Input.TextArea variant="borderless" placeholder="预期结果" autoSize={{ minRows: 1 }} style={{ padding: '10px 14px', background: '#FAFBFC', fontSize: 12.5, color: '#64748B', borderRadius: 0, resize: 'none' }} />
+                            <Input.TextArea variant="borderless" placeholder="预期结果" autoSize={{ minRows: 1 }} style={{ padding: '10px 14px', background: '#FAFBFC', fontSize: 12.5, color: '#64748B', borderRadius: 0, resize: 'none', borderBottom: '1px solid #F1F4F6' }} />
                           </Form.Item>
+                          <div style={{ padding: '10px 14px', background: '#FCFBFA' }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+                              <span className="ms" style={{ fontSize: 14, color: '#B5600A' }}>my_location</span>
+                              <span style={{ fontSize: 11.5, fontWeight: 600, color: '#B5600A' }}>判定锚点</span>
+                              <Tooltip title="执行时逐条核对的可判定点；改动步骤后可点右上角「按步骤重新生成锚点」。">
+                                <span className="ms" style={{ fontSize: 13, color: '#C9B8A8', cursor: 'help' }}>help</span>
+                              </Tooltip>
+                            </div>
+                            <Form.List name={[field.name, 'check_points']}>
+                              {(cps, { add: addCp, remove: removeCp }) => (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                                  {cps.length === 0 && (
+                                    <span style={{ fontSize: 11.5, color: '#B0BAC4' }}>暂无锚点</span>
+                                  )}
+                                  {cps.map((cp, ci) => (
+                                    <div key={cp.key} style={{ display: 'flex', gap: 7, alignItems: 'center', background: '#fff', border: '1px solid #EFE3DA', borderRadius: 8, padding: '3px 8px 3px 9px' }}>
+                                      <span style={{ flex: 'none', width: 16, height: 16, borderRadius: '50%', background: '#FEF3EE', color: '#B5600A', fontSize: 10, fontWeight: 700, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>{ci + 1}</span>
+                                      <Form.Item name={cp.name} noStyle>
+                                        <Input variant="borderless" size="small" placeholder="具体、可核对的锚点" style={{ fontSize: 12, padding: 0, flex: 1 }} />
+                                      </Form.Item>
+                                      <span className="ms" title="删除锚点" onClick={() => removeCp(cp.name)} style={{ flex: 'none', color: '#CBADA0', fontSize: 15, cursor: 'pointer' }}>close</span>
+                                    </div>
+                                  ))}
+                                  <div onClick={() => addCp('')} style={{ alignSelf: 'flex-start', display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11.5, color: '#B5600A', background: '#FEF3EE', border: '1px dashed #E7CDBD', borderRadius: 7, padding: '3px 10px', cursor: 'pointer' }}>
+                                    <span className="ms" style={{ fontSize: 13 }}>add</span>添加锚点
+                                  </div>
+                                </div>
+                              )}
+                            </Form.List>
+                          </div>
                         </div>
                         <span onClick={() => remove(field.name)} style={{ flex: 'none', marginTop: 10, fontSize: 12, color: '#C9332B', cursor: 'pointer', whiteSpace: 'nowrap' }}>删除</span>
                       </div>

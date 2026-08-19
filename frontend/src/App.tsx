@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { BrowserRouter, Routes, Route, useSearchParams, useNavigate } from 'react-router-dom'
 import { ConfigProvider, Spin, Result } from 'antd'
 import zhCN from 'antd/locale/zh_CN'
@@ -9,10 +9,15 @@ import Requirements from './pages/Requirements'
 import RequirementDetail from './pages/RequirementDetail'
 import TestCases from './pages/TestCases'
 import TestCaseList from './pages/TestCaseList'
+import CodeGraph from './pages/CodeGraph'
+import QualityRules from './pages/QualityRules'
+import ProjectSettings from './pages/ProjectSettings'
 import ExecutionHistory from './pages/ExecutionHistory'
 import DefectReview from './pages/DefectReview'
 import EnumManagement from './pages/EnumManagement'
+import AppLoginRecipes from './pages/AppLoginRecipes'
 import PageCache from './pages/PageCache'
+import DataOrchestration from './pages/DataOrchestration'
 import FrameworkRepos from './pages/FrameworkRepos'
 import UserManagement from './pages/UserManagement'
 import SystemSettings from './pages/SystemSettings'
@@ -33,7 +38,7 @@ function AuthInit({ children }: { children: React.ReactNode }) {
       const urlToken = searchParams.get('token')
 
       if (urlToken) {
-        // 从可选外部 SSO 跳转过来：用 token 静默换平台 JWT。
+        // 从 external task system 跳转过来：用 token 静默换平台 JWT，不经过登录界面
         try {
           const r = await authApi.verify(urlToken)
           localStorage.setItem('platform_jwt', r.data.jwt)
@@ -75,24 +80,29 @@ function AuthInit({ children }: { children: React.ReactNode }) {
   return <>{children}</>
 }
 
+// external task system(IdP)地址。优先用构建期注入的 VITE_EXTERNAL_TASK_URL(生产域名场景必须显式配置);
+// 未配置时按"当前访问主机:3000"推导——别人用 IP 访问本平台时,会带去同一台的 external task system,
+// 而不是写死的 localhost(写死 localhost 会让非本机用户被带回自己的本地,登录必失败)。
+function agentBoardUrl(): string {
+  const fromEnv = import.meta.env.VITE_EXTERNAL_TASK_URL
+  if (fromEnv) return fromEnv
+  return `${window.location.protocol}//${window.location.hostname}:3000`
+}
+
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const authed = !!localStorage.getItem('platform_jwt')
-  const navigate = useNavigate()
   useEffect(() => {
     if (authed) return
-    // 配置了外部 SSO 时跳转换票，否则使用平台本地登录页。
+    // 未登录 → 整页弹到 external task system 发券入口。发券地址优先用后台配置的「SSO 对接认证地址」,
+    // 取不到再回落 env/当前主机。已登录看板则静默换票回来;没登过则在看板登一次再回来。
     const here = encodeURIComponent(window.location.href)
     const go = (base: string) => {
-      const b = (base || '').replace(/\/+$/, '')
-      if (!b) {
-        navigate('/login', { replace: true })
-        return
-      }
+      const b = (base || '').replace(/\/+$/, '') || agentBoardUrl()
       window.location.href = `${b}/api/auth/sso/launch?redirect=${here}`
     }
     authApi.ssoConfig()
-      .then((r) => go(r.data.external_sso_url))
-      .catch(() => navigate('/login', { replace: true }))
+      .then((r) => go(r.data.external_task_url))
+      .catch(() => go(agentBoardUrl()))
   }, [authed])
   if (!authed) return null
   return <>{children}</>
@@ -127,13 +137,18 @@ export default function App() {
                       <Route path="/requirements/:id" element={<RequirementDetail />} />
                       <Route path="/testcases" element={<TestCases />} />
                       <Route path="/testcases/list" element={<TestCaseList />} />
+                      <Route path="/code-graph" element={<CodeGraph />} />
                       <Route path="/executions" element={<ExecutionHistory />} />
                       <Route path="/defects" element={<DefectReview />} />
                       <Route path="/enums" element={<RequireAdmin><EnumManagement /></RequireAdmin>} />
+                      <Route path="/app-login-recipes" element={<RequireAdmin><AppLoginRecipes /></RequireAdmin>} />
                       <Route path="/page-cache" element={<PageCache />} />
+                      <Route path="/data-orchestration" element={<RequireAdmin><DataOrchestration /></RequireAdmin>} />
                       <Route path="/frameworks" element={<RequireAdmin><FrameworkRepos /></RequireAdmin>} />
                       <Route path="/users" element={<RequireAdmin><UserManagement /></RequireAdmin>} />
                       <Route path="/system-settings" element={<RequireAdmin><SystemSettings /></RequireAdmin>} />
+                      <Route path="/quality-rules" element={<RequireAdmin><QualityRules /></RequireAdmin>} />
+                      <Route path="/project-settings" element={<ProjectSettings />} />
                     </Routes>
                   </AppLayout>
                 </RequireAuth>

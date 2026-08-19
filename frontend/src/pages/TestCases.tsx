@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { Typography, Card, Row, Col, Spin, Empty } from 'antd'
 import { useNavigate } from 'react-router-dom'
 import { dashboardApi } from '../api'
@@ -26,7 +26,7 @@ const C_ORANGE = { bar: '#F4C08A', text: '#9A6010' }
 const BAR_COLORS: Record<string, { bar: string; text: string }> = {
   'trade-order': C_BLUE, backend_api: C_BLUE, api: C_BLUE,
   'delivery-fulfillment': C_GREEN, web: C_GREEN,
-  admin: C_PURPLE, android: C_PURPLE, ios: C_PURPLE,
+  module: C_PURPLE, android: C_PURPLE, ios: C_PURPLE,
   P0: C_RED, P1: C_YELLOW, P2: C_BLUE, P3: C_PURPLE,
   ui: C_ORANGE,
 }

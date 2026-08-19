@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 """App 真机执行机 worker（拉取式，开箱即用）。
 
 跑在【插着安卓真机的执行机】上：主动连平台心跳上报设备 → 领取派发到本机的 App 任务 →
@@ -6,10 +6,10 @@
 上传截图 + 回传结果。这是未来 Sonic-agent 的骨架。
 
 零配置理念：启动时自动读取本机 backend/.env（复用平台的 AI 配置 AI_*、WORKER_TOKEN 等），
-WORKER_ID 默认取机器名，PLATFORM_URL 默认指本机开发服务。
+WORKER_ID 默认取机器名，PLATFORM_URL 默认指生产。使用者一般无需手配 AI。
 
 可选环境变量（不设则按上面默认/从 .env 自动取）：
-  PLATFORM_URL   平台地址（默认 http://localhost:8000）
+  PLATFORM_URL   平台地址（默认 http://127.0.0.1）
   WORKER_ID      执行机标识（默认=机器名 hostname）
   WORKER_NAME    显示名（默认=WORKER_ID）
   WORKER_TOKEN   平台 worker 令牌（默认从 backend/.env 读）
@@ -157,7 +157,7 @@ from app.services.devices import list_devices  # noqa: E402
 from app.services.runners.android_runner import AndroidAgentRunner, _UPLOADS  # noqa: E402
 from app.services.runners.base import RunContext  # noqa: E402
 
-PLATFORM = (os.environ.get("PLATFORM_URL") or "http://localhost:8000").rstrip("/")
+PLATFORM = (os.environ.get("PLATFORM_URL") or "http://127.0.0.1").rstrip("/")
 WORKER_ID = os.environ.get("WORKER_ID") or socket.gethostname() or "worker-1"
 WORKER_NAME = os.environ.get("WORKER_NAME") or WORKER_ID
 TOKEN = os.environ.get("WORKER_TOKEN") or settings.worker_token or ""
@@ -289,6 +289,9 @@ async def _run_job(client: httpx.AsyncClient, job: dict):
         ctx.extra["apk"] = p.get("apk")
     if p.get("app_package"):
         ctx.extra["app_package"] = p.get("app_package")
+    # App 自动登录：任务带 app_login 时，AndroidAgentRunner 装包后按端配方 AI 视觉登录。
+    if p.get("app_login"):
+        ctx.extra["app_login"] = p.get("app_login")
     try:
         outcome = await AndroidAgentRunner().run(case, ctx)
     except Exception as e:
@@ -301,6 +304,8 @@ async def _run_job(client: httpx.AsyncClient, job: dict):
             "error_message": getattr(outcome, "error_message", None),
             "failure_type": getattr(outcome, "failure_type", None),
             "ui_trace": getattr(outcome, "ui_trace", None),
+            "apk_install_ok": getattr(outcome, "apk_install_ok", None),
+            "app_launch_by_package_ok": getattr(outcome, "app_launch_by_package_ok", None),
         }, timeout=30)
         print(f"[job {job_id}] 完成：{outcome.status}")
     except Exception as e:

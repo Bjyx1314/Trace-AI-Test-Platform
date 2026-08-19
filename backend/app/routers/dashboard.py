@@ -201,16 +201,23 @@ async def requirements_quality(
     status: str | None = None,
     platform: str | None = None,
     owner: str | None = None,
+    mine: bool = False,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
     """按需求维度聚合质量指标（第5章质量看板），支持项目/迭代/状态/端/归属人筛选。
 
     聚合逻辑统一收口在 services.dashboard_metrics，与 /summary 共用。
-    数据可见范围：普通用户只看自己归属的需求(强制 owner=本人)，管理员不受限。
+    数据可见范围：
+    - mine=True（看板「我的需求」tab）：**恒按登录人归属/参与过滤，管理员也不放开**；
+    - mine=False（管理员「全部需求」）：管理员不受限，普通用户仍强制本人归属/参与范围。
     """
-    from app.services.data_scope import enforce_owner
-    owner = await enforce_owner(db, current_user, owner)
+    from app.services.data_scope import enforce_owner, current_owner_name
+    if mine:
+        # 「我的」= 登录人自己的归属需求，管理员同样收敛；无归属姓名则用哨兵值 → 结果为空而非全量
+        owner = await current_owner_name(db, current_user) or "\x00__self_no_name__"
+    else:
+        owner = await enforce_owner(db, current_user, owner)
     rows = await collect_requirement_rows(
         db, project_id=project_id, iteration=iteration, status=status, platform=platform, owner=owner
     )

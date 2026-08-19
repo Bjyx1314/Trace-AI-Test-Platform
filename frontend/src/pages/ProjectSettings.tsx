@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import {
-  Card, Form, Input, InputNumber, Switch, Button, message, List, Typography, Space, Tag, Empty,
+  Card, Form, Input, InputNumber, Switch, Button, message, List, Typography, Space, Tag, Empty, Select, Tooltip,
 } from 'antd'
 import { PlusOutlined } from '@ant-design/icons'
-import { projectsApi, executionsApi, qualityGateConfigApi } from '../api'
+import { projectsApi, executionsApi, qualityGateConfigApi, defectsApi } from '../api'
 import { confirmDialog } from '../components/ConfirmModal'
 import { useProjectStore } from '../store/projectStore'
 import { PANEL_CARD_STYLE } from '../styles/theme'
@@ -17,6 +17,9 @@ export default function ProjectSettings() {
   const [gateForm] = Form.useForm()
   const [gateLoading, setGateLoading] = useState(false)
   const [gateSaving, setGateSaving] = useState(false)
+  const [feishuForm] = Form.useForm()
+  const [feishuSaving, setFeishuSaving] = useState(false)
+  const [syncing, setSyncing] = useState(false)
 
   const load = () => {
     setLoading(true)
@@ -29,7 +32,55 @@ export default function ProjectSettings() {
     if (!currentProject) return
     setGateLoading(true)
     qualityGateConfigApi.get(currentProject.id).then((r) => gateForm.setFieldsValue(r.data)).finally(() => setGateLoading(false))
+    feishuForm.setFieldsValue({
+      feishu_webhook: currentProject.feishu_webhook,
+      feishu_doc_url: currentProject.feishu_doc_url,
+      feishu_project_space_id: currentProject.feishu_project_space_id,
+      feishu_project_rootcause_field: currentProject.feishu_project_rootcause_field,
+      feishu_project_defect_filter: currentProject.feishu_project_defect_filter
+        ? JSON.stringify(currentProject.feishu_project_defect_filter, null, 2)
+        : undefined,
+    })
   }, [currentProject?.id])
+
+  const handleFeishuSave = async (values: any) => {
+    if (!currentProject) return
+    let feishu_project_defect_filter: Record<string, any> | undefined
+    if (values.feishu_project_defect_filter) {
+      try {
+        feishu_project_defect_filter = JSON.parse(values.feishu_project_defect_filter)
+      } catch {
+        message.error('生产缺陷筛选 JSON 格式错误，请检查后重试')
+        return
+      }
+    }
+    setFeishuSaving(true)
+    try {
+      await projectsApi.update(currentProject.id, { ...values, feishu_project_defect_filter })
+      message.success('飞书配置已保存')
+      load()
+    } finally {
+      setFeishuSaving(false)
+    }
+  }
+
+  const handleSyncProduction = async () => {
+    if (!currentProject) return
+    setSyncing(true)
+    try {
+      const r = await defectsApi.syncProduction(currentProject.id)
+      if (r.data.reason) {
+        // 后端返回 200 但业务未执行(如未配置飞书凭据/空间)：按警告提示，不误报成功
+        message.warning(r.data.reason)
+      } else {
+        message.success(`同步 ${r.data.synced} 条，沉淀 ${r.data.sedimented} 条经验`)
+      }
+    } catch (err: any) {
+      message.error(err?.response?.data?.detail || '同步失败，请稍后重试')
+    } finally {
+      setSyncing(false)
+    }
+  }
 
   const handleCreate = async (values: any) => {
     setCreating(true)
@@ -113,9 +164,50 @@ export default function ProjectSettings() {
             <Form.Item name="coverage_threshold" label="覆盖率阈值 (%)">
               <InputNumber min={0} max={100} style={{ width: 200 }} />
             </Form.Item>
+            <Form.Item name="release_policy" label="AI 发布建议策略（覆盖缺口/失败驱动）" tooltip="advisory=仅提示; warn=卡人工确认; block=卡流水线">
+              <Select style={{ width: 240 }} options={[
+                { value: 'advisory', label: '仅提示（advisory）' },
+                { value: 'warn', label: 'warn 卡人工确认' },
+                { value: 'block', label: 'block 卡流水线' },
+              ]} />
+            </Form.Item>
             <Button type="primary" htmlType="submit" loading={gateSaving}>
               保存配置
             </Button>
+          </Form>
+        )}
+      </Card>
+
+      <Card title={`飞书项目(Meego)配置${currentProject ? ` - ${currentProject.name}` : ''}`} bordered={false} style={{ ...PANEL_CARD_STYLE, marginBottom: 24 }}>
+        {!currentProject ? (
+          <Empty description="请先在右上角选择项目" />
+        ) : (
+          <Form form={feishuForm} layout="vertical" onFinish={handleFeishuSave} style={{ maxWidth: 600 }}>
+            <Form.Item name="feishu_webhook" label="飞书 Webhook URL">
+              <Input placeholder="https://open.feishu.cn/open-apis/bot/v2/hook/..." />
+            </Form.Item>
+            <Form.Item name="feishu_doc_url" label="飞书需求文档 URL">
+              <Input />
+            </Form.Item>
+            <Form.Item name="feishu_project_space_id" label="飞书项目空间ID">
+              <Input placeholder="Meego 项目空间 ID" />
+            </Form.Item>
+            <Form.Item name="feishu_project_rootcause_field" label="问题原因字段Key">
+              <Input placeholder="Meego 缺陷字段 Key" />
+            </Form.Item>
+            <Form.Item name="feishu_project_defect_filter" label="生产缺陷筛选(JSON)">
+              <Input.TextArea rows={4} placeholder='{"field_key": "value"}' />
+            </Form.Item>
+            <Space>
+              <Button type="primary" htmlType="submit" loading={feishuSaving}>
+                保存配置
+              </Button>
+              <Tooltip title={currentProject.feishu_project_space_id ? '' : '请先填写并保存飞书项目空间ID'}>
+                <Button onClick={handleSyncProduction} loading={syncing} disabled={!currentProject.feishu_project_space_id}>
+                  批量同步生产缺陷
+                </Button>
+              </Tooltip>
+            </Space>
           </Form>
         )}
       </Card>

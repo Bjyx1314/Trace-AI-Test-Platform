@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import type { CSSProperties } from 'react'
 import { message, Table, Tag, Alert } from 'antd'
-import { systemApi, type AutomationSwitch, type AiConfig } from '../api'
+import { systemApi, type AutomationSwitch, type AiConfig, type GuardianConfig } from '../api'
 import { useAuthStore } from '../store/authStore'
 
 const BRAND = '#D97757', BRAND_SOFT = '#FBEEE6', BRAND_TEXT = '#C25E3F'
@@ -17,6 +17,7 @@ const FIELD: CSSProperties = {
   width: '100%', height: 40, padding: '0 14px', border: '1.5px solid #E7ECF0', borderRadius: 10,
   background: '#FAFBFC', fontSize: 12.5, color: '#334155', fontFamily: MONO, outline: 'none',
 }
+
 function SectionHeader({ icon, iconBg, iconColor, title, desc }: { icon: string; iconBg: string; iconColor: string; title: string; desc: string }) {
   return (
     <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '20px 24px 16px', borderBottom: '1px solid #F1F4F6' }}>
@@ -62,6 +63,12 @@ export default function SystemSettings() {
   const [provOpen, setProvOpen] = useState(false)
   const [showKey, setShowKey] = useState(false)
 
+  const [gdn, setGdn] = useState<GuardianConfig | null>(null)
+  const [gdnForm, setGdnForm] = useState({ enabled: false, base_url: '', pat: '' })
+  const [gdnSaving, setGdnSaving] = useState(false)
+  const [gdnPing, setGdnPing] = useState<{ ok: boolean; detail: unknown } | null>(null)
+  const [gdnPinging, setGdnPinging] = useState(false)
+
   const load = () => {
     setLoading(true)
     systemApi.automationSwitches().then((r) => setData(r.data))
@@ -70,7 +77,7 @@ export default function SystemSettings() {
   }
   const loadSso = () => {
     systemApi.getSsoConfig()
-      .then((r) => { setSsoUrl(r.data.external_sso_url); setSsoResolved(r.data.resolved); setSsoDefault(r.data.default) })
+      .then((r) => { setSsoUrl(r.data.external_task_url); setSsoResolved(r.data.resolved); setSsoDefault(r.data.default) })
       .catch((err) => message.error(err?.response?.data?.detail || 'SSO 配置加载失败'))
   }
   const loadAi = () => {
@@ -79,7 +86,31 @@ export default function SystemSettings() {
       .catch((err) => message.error(err?.response?.data?.detail || 'AI 配置加载失败'))
   }
 
-  useEffect(() => { if (isAdmin) { load(); loadSso(); loadAi() } }, [isAdmin])
+  const loadGdn = () => {
+    systemApi.getGuardianConfig()
+      .then((r) => { setGdn(r.data); setGdnForm({ enabled: r.data.enabled, base_url: r.data.base_url, pat: '' }) })
+      .catch((err) => message.error(err?.response?.data?.detail || 'Guardian 配置加载失败'))
+  }
+
+  useEffect(() => { if (isAdmin) { load(); loadSso(); loadAi(); loadGdn() } }, [isAdmin])
+
+  const saveGdn = async () => {
+    setGdnSaving(true)
+    try {
+      const r = await systemApi.setGuardianConfig({
+        enabled: gdnForm.enabled, base_url: gdnForm.base_url.trim(),
+        ...(gdnForm.pat.trim() ? { pat: gdnForm.pat.trim() } : {}),
+      })
+      setGdn(r.data); setGdnForm({ enabled: r.data.enabled, base_url: r.data.base_url, pat: '' })
+      message.success('Guardian 集成配置已保存')
+    } catch (err: any) { message.error(err?.response?.data?.detail || '保存失败') } finally { setGdnSaving(false) }
+  }
+  const pingGdn = async () => {
+    setGdnPinging(true); setGdnPing(null)
+    try { setGdnPing((await systemApi.pingGuardian()).data) }
+    catch (err: any) { setGdnPing({ ok: false, detail: err?.response?.data?.detail || '探测失败' }) }
+    finally { setGdnPinging(false) }
+  }
 
   const saveAi = async () => {
     setAiSaving(true)
@@ -96,7 +127,7 @@ export default function SystemSettings() {
     setSsoSaving(true)
     try {
       const r = await systemApi.setSsoConfig(ssoUrl.trim())
-      setSsoUrl(r.data.external_sso_url); setSsoResolved(r.data.resolved); setSsoDefault(r.data.default)
+      setSsoUrl(r.data.external_task_url); setSsoResolved(r.data.resolved); setSsoDefault(r.data.default)
       message.success('SSO 对接认证地址已保存')
     } catch (err: any) { message.error(err?.response?.data?.detail || '保存失败') } finally { setSsoSaving(false) }
   }
@@ -115,9 +146,7 @@ export default function SystemSettings() {
 
   const needsKey = aiForm.provider !== 'claude_cli'
   const providerLabel = ai?.providers.find((p) => p.value === aiForm.provider)?.label || aiForm.provider || '请选择 provider'
-  const effective = ai?.model
-    ? `${ai.provider} / ${ai.model}${ai.base_url ? ' / ' + ai.base_url : ''}`
-    : '未配置模型'
+  const effective = ai ? `${ai.provider}${ai.model ? ' / ' + ai.model : ''}${ai.base_url ? ' / ' + ai.base_url : ''}` : '—'
 
   const saveBtn = (onClick: () => void, saving: boolean, h = 38, disabled = false) => (
     <button onClick={onClick} disabled={saving || disabled} style={{
@@ -205,13 +234,13 @@ export default function SystemSettings() {
           <div>
             <div style={LABEL}>模型名</div>
             <input className="sys-input" style={FIELD} value={aiForm.model} onChange={(e) => setAiForm({ ...aiForm, model: e.target.value })}
-              placeholder="请输入模型标识（必填，无默认模型）" />
+              placeholder="如 gpt-5.5 / claude-sonnet-4-6（留空用 provider 默认）" />
           </div>
           {/* Base URL */}
           <div>
             <div style={LABEL}>中转 / Base URL</div>
             <input className="sys-input" style={FIELD} value={aiForm.base_url} onChange={(e) => setAiForm({ ...aiForm, base_url: e.target.value })}
-              placeholder="如 https://api.example.com/v1（使用官方地址时可留空）" />
+              placeholder="如 http://api.example.test/v1（官方/留空走默认）" />
           </div>
           {/* API Key */}
           {needsKey && (
@@ -230,7 +259,7 @@ export default function SystemSettings() {
           )}
           {/* 保存行 */}
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'nowrap' }}>
-            {saveBtn(saveAi, aiSaving, 38, !aiForm.provider || !aiForm.model.trim())}
+            {saveBtn(saveAi, aiSaving, 38, !aiForm.provider)}
             <span style={{ fontSize: 11.5, color: '#94A3B8', whiteSpace: 'nowrap', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
               <span className="ms" style={{ fontSize: 15, color: '#B5E0C8' }}>check_circle</span>
               当前生效：<span style={{ fontFamily: MONO, color: '#64748B' }}>{effective}</span>
@@ -242,11 +271,11 @@ export default function SystemSettings() {
       {/* Section 2 — 单点登录 SSO */}
       <div style={CARD}>
         <SectionHeader icon="verified_user" iconBg="#EDF7F2" iconColor="#1F8A5B" title="单点登录 SSO"
-          desc="配置可选的外部 SSO 地址；留空时使用平台本地账号登录" />
+          desc="配置 SSO 对接认证地址（external task system 地址），登录后跳转本系统免再次登录" />
         <div style={{ padding: '22px 24px', maxWidth: 600 }}>
           <div style={{ display: 'flex', gap: 10 }}>
             <input className="sys-input" style={{ ...FIELD, flex: 1 }} value={ssoUrl} onChange={(e) => setSsoUrl(e.target.value)}
-              placeholder={ssoDefault || 'https://sso.example.com'} />
+              placeholder={ssoDefault || 'http://sso.example.test'} />
             {saveBtn(saveSso, ssoSaving, 42)}
           </div>
           <div style={{ marginTop: 10, fontSize: 11.5, color: '#94A3B8', display: 'inline-flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
@@ -264,6 +293,51 @@ export default function SystemSettings() {
           desc="按端控制「执行测试通过后是否自动生成自动化用例」，关闭后该端执行通过不再生成脚本" />
         <div style={{ padding: '8px 8px 4px' }}>
           <Table rowKey="platform" dataSource={data} columns={columns} loading={loading} pagination={false} />
+        </div>
+      </div>
+
+      {/* Section 4 — Guardian 集成（代码合入态图谱影响半径） */}
+      <div style={CARD}>
+        <SectionHeader icon="hub" iconBg="#EAF0FB" iconColor="#3A6EA5" title="Guardian 集成"
+          desc="接入 Guardian 的合入态代码图谱：代码影响分析时补充「改动文件在 master 上的存量下游」。降级安全：关闭/不可达时影响分析照常（回退 AI 推断）" />
+        <div style={{ padding: '22px 24px', display: 'flex', flexDirection: 'column', gap: 16, maxWidth: 640 }}>
+          <div>
+            <div style={LABEL}>envoy MCP 端点</div>
+            <input className="sys-input" style={FIELD} value={gdnForm.base_url}
+              onChange={(e) => setGdnForm({ ...gdnForm, base_url: e.target.value })}
+              placeholder="http://guardian.example.test" />
+          </div>
+          <div>
+            <div style={LABEL}>PAT（Bearer 令牌）{gdn?.pat_set && <span style={{ color: '#94A3B8', fontWeight: 400 }}>　当前已配置：{gdn.pat_masked}（留空=不修改）</span>}</div>
+            <input className="sys-input" type="password" style={FIELD} value={gdnForm.pat}
+              onChange={(e) => setGdnForm({ ...gdnForm, pat: e.target.value })}
+              placeholder={gdn?.pat_set ? '••• 留空保持原值' : 'gdn_...'} autoComplete="new-password" />
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 16 }}>
+            <span style={LABEL as any}>总开关</span>
+            <Toggle on={gdnForm.enabled} onClick={() => setGdnForm({ ...gdnForm, enabled: !gdnForm.enabled })} />
+            <span style={{ fontSize: 11.5, color: '#94A3B8' }}>（需端点+PAT 齐备才真正生效；product：<code style={{ fontFamily: MONO }}>{gdn?.product || 'guardian'}</code>）</span>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap' }}>
+            {saveBtn(saveGdn, gdnSaving, 38)}
+            <button onClick={pingGdn} disabled={gdnPinging} style={{
+              height: 38, padding: '0 16px', background: '#fff', color: '#3A6EA5', border: '1.5px solid #CFE0F2',
+              borderRadius: 10, fontSize: 12.5, fontWeight: 600, cursor: gdnPinging ? 'wait' : 'pointer',
+              display: 'inline-flex', alignItems: 'center', gap: 5,
+            }}>
+              <span className="ms" style={{ fontSize: 16 }}>network_check</span>{gdnPinging ? '探测中…' : '测试连接'}
+            </button>
+            {gdnPing && (
+              <span style={{ fontSize: 12, display: 'inline-flex', alignItems: 'center', gap: 5, color: gdnPing.ok ? '#1F8A5B' : '#C2410C' }}>
+                <span className="ms" style={{ fontSize: 15 }}>{gdnPing.ok ? 'check_circle' : 'error'}</span>
+                {gdnPing.ok ? '连通正常' : `不可用：${typeof gdnPing.detail === 'string' ? gdnPing.detail : JSON.stringify(gdnPing.detail)}`}
+              </span>
+            )}
+          </div>
+          <div style={{ fontSize: 11.5, color: '#94A3B8' }}>
+            当前生效：<code style={{ fontFamily: MONO, color: gdn?.enabled ? '#1F8A5B' : '#94A3B8' }}>{gdn?.enabled ? '已启用' : '未启用'}</code>
+            　被测仓库未接入 Guardian 传感器前，影响面查询会如实返回「未接入」，属正常。
+          </div>
         </div>
       </div>
     </div>

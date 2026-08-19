@@ -1,4 +1,4 @@
-"""PC web 执行登录态保活 —— 可选复用外部 PC 自动化框架的登录机制。
+﻿"""PC web 执行登录态保活 —— 直接复用 PC 自动化框架(./frameworks/web)的登录机制。
 
 设计原则：登录流程、TTL/失效判定、重登都由框架负责，本模块只做「编排 + 消费」，零重写。
 - 判定是否需要重登：复用框架 common.utils.auth_state.is_state_usable(TTL) + 一次轻量运行时探测
@@ -7,14 +7,16 @@
   fixture 自动登录并把 storageState 存到框架 state 目录；本模块返回该 state 文件路径供执行注入。
 - 账号是框架 projects.yaml 维护的(唯一真源)，账号变更只改那里，这里无需改动。
 
-未配置外部框架映射的端回退到平台本地手动登录态 login_states/<端>.json，
-该文件可由 tools/capture_login.py 手动抓取。
+不在框架覆盖范围内的端(如管理后台/运营后台 无地址；用户门户 暂无冒烟)：回退到平台本地手动登录态
+login_states/<端>.json(由 tools/capture_login.py 手动抓)，没有则返回 None。
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import Optional
@@ -23,24 +25,44 @@ import yaml
 
 from app.config import settings
 
-# 外部 PC 自动化框架 checkout 路径。
-FRAMEWORK_ROOT = Path(os.environ.get("FRAMEWORK_ROOT") or "./frameworks/web")
+logger = logging.getLogger(__name__)
+
+# PC 自动化框架(web_ui_automation)checkout 路径。本地默认 ./frameworks/web；
+# 服务器/容器用环境变量 FRAMEWORK_ROOT 指向 clone 的仓库(如 /opt/framework)。
+FRAMEWORK_ROOT = Path(os.environ.get("FRAMEWORK_ROOT") or r"./frameworks/web")
 _PROJECTS_YAML = FRAMEWORK_ROOT / "common" / "config" / "projects.yaml"
 
-# 通过 JSON 环境变量配置端与外部框架的映射，仓库不预置任何业务系统。
-# 示例：{"web-admin":{"project":"demo","web":"main","auth_type":"password",
-# "tenant":false,"flow_class":"my_flows.login:LoginFlow","smoke":"tests/test_login.py"}}
-def _load_platform_mapping() -> dict[str, dict]:
-    raw = os.environ.get("FRAMEWORK_PLATFORM_MAP_JSON") or "{}"
+def _load_json_env(name: str, default: dict) -> dict:
+    raw = os.environ.get(name)
+    if not raw:
+        return dict(default)
     try:
         data = json.loads(raw)
-        return data if isinstance(data, dict) else {}
-    except (TypeError, json.JSONDecodeError):
-        return {}
+        return data if isinstance(data, dict) else dict(default)
+    except json.JSONDecodeError:
+        logger.warning("Invalid %s JSON, using default web login profile", name)
+        return dict(default)
 
 
-_PLATFORM_TO_FRAMEWORK = _load_platform_mapping()
-_UNIVERSAL_SMOKE = os.environ.get("FRAMEWORK_LOGIN_SMOKE") or ""
+# Platform label -> external framework login metadata. The open-source edition
+# ships only a generic example; real mappings should be injected through
+# WEB_LOGIN_FRAMEWORKS_JSON.
+_UNIVERSAL_SMOKE = "ui_web/tests/core/test_demo_smoke.py"
+
+_DEFAULT_PLATFORM_TO_FRAMEWORK: dict[str, dict] = {
+    "demo-web": {
+        "project": "demo",
+        "web": "main",
+        "flow": "demo",
+        "flow_class": "ui_web.flows.demo_auth_flow:DemoAuthFlow",
+        "auth_type": "password",
+        "tenant": False,
+    },
+}
+_PLATFORM_TO_FRAMEWORK: dict[str, dict] = _load_json_env(
+    "WEB_LOGIN_FRAMEWORKS_JSON",
+    _DEFAULT_PLATFORM_TO_FRAMEWORK,
+)
 
 _SMOKE_TIMEOUT = 240  # 单端登录冒烟最长等待(秒)
 _TEMP_LOGIN_TIMEOUT = 180  # 临时账号登录最长等待(秒)
@@ -253,8 +275,7 @@ async def ensure_login_state(platform: str, role: str = "default") -> Optional[s
             usable = _load_auth_state().is_state_usable(state_path, meta_path, ttl_seconds_fallback=ttl)
             if usable and await _state_still_logged_in(base_url, state_path):
                 return str(state_path)
-            smoke = fw.get("smoke") or _UNIVERSAL_SMOKE
-            if smoke and await _refresh_via_framework(project, web, role, smoke):
+            if await _refresh_via_framework(project, web, role, _UNIVERSAL_SMOKE):
                 return str(state_path) if state_path.exists() else None
             # 重登失败：若旧态还在就先用旧态兜底，否则 None
             return str(state_path) if state_path.exists() else None
@@ -269,8 +290,12 @@ async def login_temp(platform: str, username: str, password: str,
                      base_url: Optional[str] = None) -> bool:
     """用「临时账号」登录并把 storageState 存到 out_path(临时文件，用完即弃)。
 
-    复用配置的外部框架登录流程，但【绝不写入框架配置/状态目录】，
-    账号密码仅经环境变量传给子进程、不落盘、不入框架 yaml。返回是否成功。
+    - 框架覆盖的端：复用框架的登录流程，但【绝不写入框架配置/状态目录】，
+      账号密码仅经环境变量传给子进程、不落盘、不入框架 yaml。
+    - 框架未覆盖的端：降级为「框架无关的通用账密登录」——用调用方传入的被测地址
+      (枚举地址矩阵)，playwright 直接打开登录页、尽力识别标准账号+密码表单并提交，成功则存盘。
+      仅支持标准账密登录页，不处理图形/短信验证码与租户选择。
+    返回是否成功。
     """
     fw = _PLATFORM_TO_FRAMEWORK.get(platform)
     if not fw or not _framework_available():
@@ -282,10 +307,12 @@ async def login_temp(platform: str, username: str, password: str,
     if not base_url:
         return False
 
-    # 验证码登录端：用户只给手机号时，可复用框架配置的测试验证码。
+    # 验证码登录端：用户只给手机号，验证码统一用框架配置的固定码，不让用户输。
     if fw.get("auth_type") == "sms_code" and not password:
         password = _framework_default_secret(fw["project"], fw["web"]) or ""
     if not password:
+        return False
+    if not fw.get("flow_class"):
         return False
 
     runner = Path(__file__).resolve().parents[2] / "tools" / "temp_login_runner.py"
@@ -295,12 +322,13 @@ async def login_temp(platform: str, username: str, password: str,
         **os.environ,
         "PYTHONUTF8": "1",
         "TL_FRAMEWORK_ROOT": str(FRAMEWORK_ROOT),
-        "TL_FLOW_CLASS": fw.get("flow_class") or "",
-        "TL_FLOW_TENANT": "true" if fw.get("tenant") else "false",
+        "TL_FLOW": fw["flow"],
+        "TL_FLOW_CLASS": str(fw.get("flow_class") or ""),
         "TL_BASE_URL": base_url,
         "TL_OUT": out_abs,
         "TL_USER": username,
         "TL_PASS": password,
+        "TL_HAS_TENANT": "1" if fw.get("tenant") else "0",
         "TL_TENANT": tenant_name or "",
     }
     # 临时账号登录子进程同样跑框架登录流程(ui_web.flows.* → 经 common 依赖 appium)，
@@ -320,3 +348,67 @@ async def login_temp(platform: str, username: str, password: str,
         await proc.wait()
         return False
     return proc.returncode == 0 and Path(out_abs).exists()
+
+
+# 通用降级登录：账号/密码输入框、登录按钮的候选选择器（尽力覆盖常见后台登录页）
+_GENERIC_USER_SEL = (
+    "input[placeholder*='账号'], input[placeholder*='帐号'], input[placeholder*='用户名'], "
+    "input[placeholder*='手机'], input[placeholder*='邮箱'], "
+    "input[name*='user' i], input[name*='account' i], input[name*='phone' i], "
+    "input[name*='mobile' i], input[name*='email' i], "
+    "input[type='text']:visible, input[type='tel']:visible, input[type='email']:visible"
+)
+_GENERIC_PWD_SEL = "input[type='password']:visible"
+_GENERIC_LOGIN_BTN = re.compile(r"登\s*录|登\s*入|立即登录|登陆|log\s*in|sign\s*in", re.I)
+
+
+async def _login_temp_generic(base_url: Optional[str], username: str, password: str,
+                              out_path: str, tenant_name: Optional[str] = None) -> bool:
+    """框架未覆盖端的降级登录：playwright 打开被测地址，尽力识别标准「账号+密码」表单并提交，
+    成功后把 storageState 存到 out_path。仅支持标准账密登录页；不处理验证码/租户选择/SSO 跳转。
+
+    任何异常都吞掉返回 False（调用方会退回 ensure_login_state 的本地登录态兜底，语义与旧版一致）。
+    """
+    base_url = (base_url or "").strip()
+    if not base_url or not username or not password:
+        return False
+    try:
+        from playwright.async_api import async_playwright
+    except Exception:
+        return False
+    try:
+        async with async_playwright() as pw:
+            browser = await pw.chromium.launch(headless=True)
+            ctx = await browser.new_context()
+            page = await ctx.new_page()
+            try:
+                await page.goto(base_url, wait_until="domcontentloaded", timeout=30000)
+                await asyncio.sleep(1.5)
+                # 已经是登录态(直接进主页、无密码框)：直接存盘即可
+                if await page.locator(_GENERIC_PWD_SEL).count() == 0 and "login" not in page.url.lower():
+                    await _save_state(ctx, out_path)
+                    return Path(out_path).exists()
+                await page.locator(_GENERIC_USER_SEL).first.fill(username, timeout=8000)
+                await page.locator(_GENERIC_PWD_SEL).first.fill(password, timeout=8000)
+                try:
+                    await page.get_by_role("button", name=_GENERIC_LOGIN_BTN).first.click(timeout=5000)
+                except Exception:
+                    # 兜底：密码框回车提交
+                    await page.locator(_GENERIC_PWD_SEL).first.press("Enter")
+                await asyncio.sleep(3.5)
+                # 成功判定：离开登录页 或 登录页已无密码框
+                ok = "login" not in page.url.lower() or await page.locator(_GENERIC_PWD_SEL).count() == 0
+                if ok:
+                    await _save_state(ctx, out_path)
+                return ok and Path(out_path).exists()
+            finally:
+                await browser.close()
+    except Exception as e:
+        logger.warning("通用降级登录失败(base_url=%s): %s", base_url, e)
+        return False
+
+
+async def _save_state(ctx, out_path: str) -> None:
+    p = Path(out_path).resolve()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    await ctx.storage_state(path=str(p))

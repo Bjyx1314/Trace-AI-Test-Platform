@@ -54,6 +54,9 @@ class WorkerDispatchRunner(BaseRunner):
                 "steps": getattr(case, "steps", None) or [],
                 "expected_result": getattr(case, "expected_result", None) or "",
                 "platforms": getattr(case, "platforms", None) or [],
+                # AI 质量闭环：下发覆盖项，worker 侧 AndroidAgentRunner 据此产出 checked_points
+                # （需 worker 二进制同步支持；未升级的 worker 忽略此字段，证据按整体结论兜底）
+                "covered_items": getattr(case, "covered_items", None) or [],
                 "base_url": ctx.base_url,
                 # 发起人 key + 中转配置：worker 用它执行(用户自己的额度)，worker 无需本机 AI 配置
                 "ai_key": (ctx.extra or {}).get("ai_key"),
@@ -64,6 +67,9 @@ class WorkerDispatchRunner(BaseRunner):
                 "apk": (ctx.extra or {}).get("apk"),
                 # App 目标应用包名：worker 执行前按此直接启动 App(不用 AI 桌面找、避免找错 App)
                 "app_package": (ctx.extra or {}).get("app_package"),
+                # App 自动登录配置：{端key: {env, account, tenant, label}}。worker 侧 AndroidAgentRunner 装包后据此登录
+                # （需 worker 二进制同步支持；未升级的 worker 忽略此字段）
+                "app_login": (ctx.extra or {}).get("app_login"),
             }
             job = AppExecJob(
                 execution_id=ctx.execution_id,
@@ -93,6 +99,12 @@ class WorkerDispatchRunner(BaseRunner):
                         error_message=r.get("error_message"),
                         failure_type=r.get("failure_type"),
                         ui_trace=r.get("ui_trace"),
+                        # AI 质量闭环：覆盖项证据随 worker 结果回传
+                        checked_points=r.get("checked_points"),
+                        actual_visited_pages=r.get("actual_visited_pages"),
+                        actual_api_calls=r.get("actual_api_calls"),
+                        apk_install_ok=r.get("apk_install_ok"),
+                        app_launch_by_package_ok=r.get("app_launch_by_package_ok"),
                     )
 
         # 超时：收尾任务并释放设备

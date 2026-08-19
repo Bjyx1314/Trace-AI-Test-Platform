@@ -1,4 +1,4 @@
-"""按登录用户限定数据可见范围：普通用户只看自己创建/归属的数据，管理员不受限。
+﻿"""按登录用户限定数据可见范围：普通用户只看自己创建/归属的数据，管理员不受限。
 
 需求/质量看板等以 owner_name(归属人姓名) 为口径；本模块统一计算「应生效的归属过滤值」，
 避免普通用户通过直接调接口或传参越权查看他人数据。
@@ -13,10 +13,10 @@ def is_admin(current_user: dict | None) -> bool:
 
 
 async def admin_user_ids(db: AsyncSession) -> set[str]:
-    """所有管理员的用户标识集合(PlatformUser.id + external_user_id)。
+    """所有管理员的用户标识集合(PlatformUser.id + external_task_user_id)。
 
     用于把「管理员账号关联的真机」识别为公共 App 测试设备：设备上报的 owner_user_id
-    可能是平台主键(uid)或外部 SSO 用户 id(sub)，故两者都收进集合以便命中。
+    可能是平台主键(uid)或 external task system 用户id(sub)，故两者都收进集合以便命中。
     """
     from sqlalchemy import select
     from app.models import PlatformUser
@@ -27,9 +27,9 @@ async def admin_user_ids(db: AsyncSession) -> set[str]:
     for u in rows:
         if u.id:
             ids.add(str(u.id))
-        external_id = getattr(u, "external_user_id", None)
-        if external_id:
-            ids.add(str(external_id))
+        abid = getattr(u, "external_task_user_id", None)
+        if abid:
+            ids.add(str(abid))
     return ids
 
 

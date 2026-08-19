@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react'
-import { Modal, Button, Typography, Space, Card, Tag, Select, message } from 'antd'
+﻿import { useState, useEffect } from 'react'
+import { Modal, Button, Typography, Space, Card, Tag, Select, Input, message } from 'antd'
 import { executionsApi, workerApi, enumsApi } from '../api'
 import type { UrlMatrix } from '../api'
 import { platformTagStyle } from '../styles/tagColors'
 import { MONO_FONT } from '../styles/theme'
+import FavInput from './FavInput'
 
 // 复制到剪贴板：优先 navigator.clipboard(仅 HTTPS/localhost 可用)，HTTP 下回退 execCommand
 async function copyText(text: string) {
@@ -40,6 +41,7 @@ const PLATFORM_GROUP_FALLBACK: Record<string, 'pc' | 'app' | 'miniprogram' | 'ap
   'web-admin': 'pc', 'web-portal': 'pc',
   'android-app': 'app', 'ios-app': 'app', 'mini-app': 'miniprogram',
   web: 'pc', backend_api: 'api', android: 'app', ios: 'app', miniprogram: 'miniprogram',
+  接口: 'api', api: 'api',
 }
 
 // 运行时从枚举配置载入的「端→执行口径」映射，覆盖兜底表。App 启动调 loadPlatformGroups() 拉一次。
@@ -67,32 +69,32 @@ export function isAutoExecutable(bucket: string): boolean {
   return bucket === 'web' || bucket === 'api'
 }
 
-/** 按端分类用例 → web / api / mobile / miniprogram（多端优先级 api > app > 小程序 > pc）。 */
+/** 按端分类用例 → web / api / mobile / miniprogram（多端优先级 api > 小程序 > pc > app）。
+ * PC 优先于 App：同时含 PC 端(如 web-admin)与 App 端(如 Android App)的双端用例按 PC/web 执行。 */
 export function categorizeCaseByPlatform(c: any): 'web' | 'api' | 'mobile' | 'miniprogram' {
   const platforms: string[] = c?.platforms || []
   const groups = platforms.map(platformGroupOf).filter(Boolean)
   if (c?.case_type === 'api' || groups.includes('api')) return 'api'
-  if (groups.includes('app')) return 'mobile'
   if (groups.includes('miniprogram')) return 'miniprogram'
+  if (groups.includes('pc')) return 'web'
+  if (groups.includes('app')) return 'mobile'
   return 'web'
 }
 
 /**
  * 统一的执行测试配置弹框（需求详情与用例库共用）。
  * - PC/Web：账号切换（框架已配账号 / 临时账号，用完即弃）
- * - 接口：填代码仓库 / API 基础 URL
+ * - 接口：按用例接口定义直连被测服务，无需填写代码仓库地址
  * - 移动端：选目标真机（默认你自己执行机连的设备，下拉含你的+公共设备），无设备时引导「连接我的真机」
  */
 export default function ExecConfigModal({
-  open, cases, categorizeCase, execApiBaseUrl, setExecApiBaseUrl, onCancel, onConfirm,
+  open, cases, categorizeCase, onCancel, onConfirm,
 }: {
   open: boolean
   cases: any[]
   categorizeCase: (c: any) => string
-  execApiBaseUrl: string
-  setExecApiBaseUrl: (v: string) => void
   onCancel: () => void
-  onConfirm: (runMode: string, accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>) => void
+  onConfirm: (runMode: string, accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>, appLogin?: Record<string, any>) => void
 }) {
   const automatedCases = cases.filter((c) => c.is_automated)
   const [view, setView] = useState<'choose' | 'config'>(automatedCases.length > 0 ? 'choose' : 'config')
@@ -100,6 +102,8 @@ export default function ExecConfigModal({
   useEffect(() => {
     setView(automatedCases.length > 0 ? 'choose' : 'config')
     setOpenDD(null)
+    setSelectedDevice(undefined)
+    setMobileMode('remote')   // 每次打开都默认远程真机(Sonic)
   }, [open]) // eslint-disable-line react-hooks/exhaustive-deps
 
   // PC web 账号选择
@@ -154,8 +158,9 @@ export default function ExecConfigModal({
     })
     return ov
   }
+  // 仅「框架覆盖端」显式切到临时账号时才强制填全；未覆盖端的临时账号是选填(留空走本地登录态兜底)
   const tempIncomplete = Object.entries(acctSel).some(([p, s]: [string, any]) =>
-    s?.mode === 'temp' && (!s.username || (!isSms(p) && !s.password)))
+    s?.mode === 'temp' && webAccounts[p]?.covered && (!s.username || (!isSms(p) && !s.password)))
 
   // 移动端真机（执行机 worker 上报，按归属选择）
   const [devices, setDevices] = useState<{ serial: string; model: string; worker_name?: string; is_shared?: boolean; is_public?: boolean; busy?: boolean; owner_user_id?: string | null }[]>([])
@@ -165,7 +170,8 @@ export default function ExecConfigModal({
   const [devChecking, setDevChecking] = useState(false)
   const [selectedDevice, setSelectedDevice] = useState<string | undefined>(undefined)
   // 无本地真机时的选择：'connect'=连自己的真机 | 'remote'=远程真机(Sonic) | 'public'=公共设备
-  const [mobileMode, setMobileMode] = useState<'connect' | 'remote' | 'public' | undefined>(undefined)
+  // 默认远程真机(Sonic)：即选即用、无需本地设备
+  const [mobileMode, setMobileMode] = useState<'connect' | 'remote' | 'public' | undefined>('remote')
   const [guideOpen, setGuideOpen] = useState(false)
   const [token, setToken] = useState('')
   const [myUid, setMyUid] = useState('')
@@ -198,17 +204,19 @@ export default function ExecConfigModal({
   const publicDevices = devices.filter((d) => d.is_public)
   const hasMyDevice = !!myDevice
 
-  // 默认目标设备：有「我自己的设备」才自动选它；否则按所选模式定(连真机/远程/公共)。
+  // 默认目标设备：优先默认【远程真机(Sonic)】；无远程真机时才回退到自己的本地设备/公共设备。
   useEffect(() => {
+    // 默认优先【远程真机(Sonic)】：只要有在线远程真机就默认选它，即使本地也连了自己的设备。
+    if (sonicDevices.length) { setSelectedDevice(sonicDevices[0].serial); return }
     if (hasMyDevice) { setSelectedDevice(myDevice!.serial); return }
     if (mobileMode === 'public' && publicDevices.length) setSelectedDevice(publicDevices[0].serial)
-    else if (mobileMode === 'remote' && sonicDevices.length) setSelectedDevice(sonicDevices[0].serial)
     else setSelectedDevice(undefined)
   }, [devices, sonicDevices, myUid, mobileMode]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const webCases = cases.filter((c) => categorizeCase(c) === 'web')
   const apiCases = cases.filter((c) => categorizeCase(c) === 'api')
   const mobileCases = cases.filter((c) => categorizeCase(c) === 'mobile')
+  const effectiveTargetDevice = mobileCases.length > 0 ? (selectedDevice ?? null) : null
   // 移动端只有在选定了目标设备(我的设备 或 显式选了公共设备)时才计入可执行数
   const executableCount = webCases.length + apiCases.length + (selectedDevice ? mobileCases.length : 0)
 
@@ -233,6 +241,42 @@ export default function ExecConfigModal({
     const ov: Record<string, string> = {}
     appPlatforms.forEach((app) => { if (pkgSel[app]) ov[app] = pkgSel[app] })
     return Object.keys(ov).length ? ov : undefined
+  }
+
+  // App 自动登录：环境(枚举 app_env) + 账号(手机号，每次手输) + 验证码(默认 SIT 固定码，可按环境改) + 期望租户(仅Android App)。
+  const [appEnv, setAppEnv] = useState<string>('')
+  const [appAccount, setAppAccount] = useState<string>('')
+  const [appCode, setAppCode] = useState<string>('768235')
+  const [showCode, setShowCode] = useState(false)  // 验证码默认不展示(固定 SIT 码)，非 SIT 才点开改
+  const [appTenant, setAppTenant] = useState<string>('')
+  const [appEnvOptions, setAppEnvOptions] = useState<{ key: string; label: string }[]>([])
+  const [platformLabels, setPlatformLabels] = useState<Record<string, string>>({})
+  const [needTenant, setNeedTenant] = useState(false)  // 所选 App 端里是否有【配方需要选租户】的(决定是否显示期望租户框)
+  useEffect(() => {
+    if (!open) return
+    setAppEnv(''); setAppAccount(''); setAppCode('768235'); setShowCode(false); setAppTenant('')
+    enumsApi.list('app_env').then((r) => setAppEnvOptions((r.data || []).map((e: any) => ({ key: e.key, label: e.label })))).catch(() => setAppEnvOptions([]))
+    enumsApi.list('platform').then((r) => { const m: Record<string, string> = {}; (r.data || []).forEach((e: any) => { m[e.key] = e.label }); setPlatformLabels(m) }).catch(() => {})
+  }, [open])
+  const labelOf = (k: string) => platformLabels[k] || k
+  // 查询所选 App 端里是否有配方需要选租户 → 决定是否显示「期望租户」框
+  useEffect(() => {
+    if (!open || appPlatforms.length === 0) { setNeedTenant(false); return }
+    executionsApi.appTenantSupport(appPlatforms.map(labelOf))
+      .then((r) => setNeedTenant(Object.values(r.data || {}).some(Boolean)))
+      .catch(() => setNeedTenant(false))
+  }, [open, appPlatforms.join(','), Object.keys(platformLabels).length])
+  const buildAppLogin = (): Record<string, any> | undefined => {
+    if (appPlatforms.length === 0 || !appEnv || !appAccount.trim()) return undefined
+    const envLabel = appEnvOptions.find((e) => e.key === appEnv)?.label || appEnv
+    const m: Record<string, any> = {}
+    appPlatforms.forEach((p) => {
+      m[p] = { env: envLabel, account: appAccount.trim(), label: labelOf(p),
+        ...(appCode.trim() ? { code: appCode.trim() } : {}),
+        // 填了期望租户就下发给该端(Android App/Android App等)；后端按各端配方决定是否/如何切租户，不需要的端会忽略
+        ...(appTenant.trim() ? { tenant: appTenant.trim() } : {}) }
+    })
+    return m
   }
 
   if (!open) return null
@@ -278,7 +322,7 @@ export default function ExecConfigModal({
         </Typography.Text>
         {envSwitch}
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
-          <Card hoverable onClick={() => onConfirm('automated', buildOverrides(), selectedDevice ?? null, execEnv, buildPackageOverrides())} style={{ cursor: 'pointer', borderColor: '#52c41a' }}>
+          <Card hoverable onClick={() => onConfirm('automated', buildOverrides(), effectiveTargetDevice, execEnv, buildPackageOverrides(), buildAppLogin())} style={{ cursor: 'pointer', borderColor: '#52c41a' }}>
             <Space align="start">
               <Tag color="success" style={{ fontSize: 13 }}>执行自动化用例</Tag>
               <Typography.Text type="secondary">直接运行已生成的自动化脚本，快速验证</Typography.Text>
@@ -361,12 +405,24 @@ export default function ExecConfigModal({
               {/* 执行环境切换（提取为 envSwitch，choose/config 两视图共用）：默认 SIT，账号上方 */}
               {envSwitch}
 
-              {webPlatforms.filter((p) => webAccounts[p] && !webAccounts[p].covered).map((p) => (
-                <div key={p} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                  <span style={{ ...platformTagStyle(p), margin: 0, fontSize: 12, borderRadius: 7, padding: '2px 8px' }}>{p}</span>
-                  <span style={{ fontSize: 12, color: '#B0BAC4' }}>未接入自动化框架（地址无效/未配登录），暂不支持账号切换</span>
-                </div>
-              ))}
+              {webPlatforms.filter((p) => webAccounts[p] && !webAccounts[p].covered).map((p) => {
+                const sel = acctSel[p] || { mode: 'temp' }
+                const setSel = (patch: any) => setAcctSel((prev) => ({ ...prev, [p]: { ...(prev[p] || { mode: 'temp' }), ...patch } }))
+                return (
+                  <div key={p} style={{ marginBottom: 14 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                      <span style={{ ...platformTagStyle(p), margin: 0, fontSize: 12, borderRadius: 7, padding: '2px 8px' }}>{p}</span>
+                      <span style={{ fontSize: 12, color: '#B0BAC4' }}>未接入自动化框架，降级执行：填临时账号即用它登录；留空则用已抓取的本地登录态</span>
+                    </div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <input className="exec-input" placeholder="账号（选填）" value={sel.username || ''} onChange={(e) => setSel({ username: e.target.value })}
+                        style={{ flex: 1, minWidth: 140, height: 38, padding: '0 12px', border: '1.5px solid #E7ECF0', borderRadius: 9, fontSize: 13 }} />
+                      <input className="exec-input" type="password" placeholder="密码（选填）" value={sel.password || ''} onChange={(e) => setSel({ password: e.target.value })}
+                        style={{ flex: 1, minWidth: 140, height: 38, padding: '0 12px', border: '1.5px solid #E7ECF0', borderRadius: 9, fontSize: 13 }} />
+                    </div>
+                  </div>
+                )
+              })}
               {webPlatforms.filter((p) => webAccounts[p]?.covered).map((p) => {
                 const info = webAccounts[p]
                 const sel = acctSel[p] || { mode: 'role', role: 'default' }
@@ -417,13 +473,21 @@ export default function ExecConfigModal({
                       </>
                     )}
                     {sel.mode === 'temp' && (
-                      <div style={{ display: 'flex', gap: 8, marginTop: 8, flexWrap: 'wrap' }}>
-                        <input className="exec-input" placeholder={isSms(p) ? '手机号' : '账号'} value={sel.username || ''} onChange={(e) => setSel({ username: e.target.value })}
-                          style={{ flex: 1, minWidth: 140, height: 38, padding: '0 12px', border: '1.5px solid #E7ECF0', borderRadius: 9, fontSize: 13 }} />
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
+                        {isSms(p) ? (
+                          <div style={{ flex: 1, minWidth: 140 }}>
+                            <FavInput value={sel.username || ''} onChange={(v) => setSel({ username: v })} placeholder="手机号" kind="phone" />
+                          </div>
+                        ) : (
+                          <div style={{ flex: 1, minWidth: 140 }}>
+                            <FavInput value={sel.username || ''} onChange={(v) => setSel({ username: v })} placeholder="账号" kind="phone" />
+                          </div>
+                        )}
                         {isSms(p) ? (
                           info?.tenant && (
-                            <input className="exec-input" placeholder="租户名（选填）" value={sel.tenant_name || ''} onChange={(e) => setSel({ tenant_name: e.target.value })}
-                              style={{ flex: 1, minWidth: 140, height: 38, padding: '0 12px', border: '1.5px solid #E7ECF0', borderRadius: 9, fontSize: 13 }} />
+                            <div style={{ flex: 1, minWidth: 140 }}>
+                              <FavInput value={sel.tenant_name || ''} onChange={(v) => setSel({ tenant_name: v })} placeholder="租户名（选填）" kind="tenant" />
+                            </div>
                           )
                         ) : (
                           <input className="exec-input" type="password" placeholder="密码" value={sel.password || ''} onChange={(e) => setSel({ password: e.target.value })}
@@ -444,16 +508,13 @@ export default function ExecConfigModal({
           {/* 接口 */}
           {apiCases.length > 0 && (
             <div style={{ marginBottom: mobileCases.length ? 18 : 0 }}>
-              <div style={{ background: BRAND_SOFT, border: `1px solid ${BRAND_BORDER}`, borderRadius: 11, padding: '13px 15px', display: 'flex', gap: 11, marginBottom: 14 }}>
+              <div style={{ background: BRAND_SOFT, border: `1px solid ${BRAND_BORDER}`, borderRadius: 11, padding: '13px 15px', display: 'flex', gap: 11 }}>
                 <span className="ms" style={{ fontSize: 18, color: BRAND, marginTop: 1 }}>info</span>
                 <div>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: BRAND }}>接口测试将直接调用代码仓库中的 API</div>
-                  <div style={{ fontSize: 12, color: '#7A6050', lineHeight: 1.7 }}>连接本需求关联的代码仓库，读取并执行接口测试脚本，对真实 API 端点验证。</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: BRAND }}>接口测试将直接发送真实请求</div>
+                  <div style={{ fontSize: 12, color: '#7A6050', lineHeight: 1.7 }}>按用例的接口定义直连被测服务(默认 SIT 环境)，无需填写代码仓库地址。</div>
                 </div>
               </div>
-              <div style={{ fontSize: 12.5, fontWeight: 600, color: '#64748B', marginBottom: 8 }}>代码仓库地址 / API 基础 URL</div>
-              <input className="exec-input" placeholder="如 https://github.com/org/repo 或 http://localhost:8000" value={execApiBaseUrl} onChange={(e) => setExecApiBaseUrl(e.target.value)}
-                style={{ width: '100%', height: 40, padding: '0 13px', border: '1.5px solid #E7ECF0', borderRadius: 10, fontSize: 13 }} />
             </div>
           )}
 
@@ -476,55 +537,45 @@ export default function ExecConfigModal({
                   <Select style={{ width: '100%' }} dropdownStyle={{ zIndex: 1300 }} value={selectedDevice} onChange={setSelectedDevice}
                     options={[
                       ...devices
-                        .filter((d) => (myUid && d.owner_user_id === myUid) || d.is_public)
+                        .filter((d) => myUid && d.owner_user_id === myUid)
                         .map((d) => ({
                           value: d.serial,
-                          label: (myUid && d.owner_user_id === myUid) ? `我的设备 · ${d.model}` : `公共设备 · ${d.model}${d.worker_name ? '（' + d.worker_name + '）' : ''}`,
+                          label: `我的设备 · ${d.model}`,
                         })),
                       ...sonicDevices.map((d) => ({
                         value: d.serial,
                         label: `远程真机 · ${d.model}${d.busy ? '（占用中）' : ''}`,
                       })),
                     ]} />
-                  <div style={{ fontSize: 11.5, color: '#B0BAC4', marginTop: 6 }}>默认用你自己执行机连的真机；也可选公共/远程真机(Sonic)，被占用时任务会排队。</div>
+                  <div style={{ fontSize: 11.5, color: '#B0BAC4', marginTop: 6 }}>默认用你自己执行机连的真机；也可选远程真机(Sonic)，被占用时任务会排队。</div>
                 </div>
               ) : (
-                /* 本地无自己的真机 → 二选一：连接真机 / 使用公共设备 */
+                /* 本地无自己的真机 → 二选一：连接真机 / 远程真机 */
                 <div>
                   <div style={{ background: '#FFFBF0', border: '1px solid #F9E2A0', borderRadius: 11, padding: '11px 14px', display: 'flex', gap: 10, marginBottom: 12 }}>
                     <span className="ms" style={{ fontSize: 17, color: '#E8930C', marginTop: 1 }}>info</span>
                     <div style={{ fontSize: 12.5, color: '#92400E', lineHeight: 1.7 }}>未检测到你本地连接的真机。请选择执行方式：</div>
                   </div>
-                  <div style={{ display: 'flex', gap: 10 }}>
+                  <div style={{ display: 'flex', gap: 12 }}>
                     {/* 选项一：连接自己的真机 */}
                     <div onClick={() => setMobileMode('connect')}
-                      style={{ flex: 1, cursor: 'pointer', border: `1.5px solid ${mobileMode === 'connect' ? BRAND : '#E7ECF0'}`, background: mobileMode === 'connect' ? '#FFF7F3' : '#fff', borderRadius: 11, padding: '13px 14px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                        <span className="ms" style={{ fontSize: 18, color: BRAND }}>usb</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>连接真机</span>
+                      style={{ flex: 1, cursor: 'pointer', border: `1.5px solid ${mobileMode === 'connect' ? BRAND : '#E7ECF0'}`, background: mobileMode === 'connect' ? '#FFF7F3' : '#fff', borderRadius: 12, padding: '16px 18px', transition: 'all .15s' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 7 }}>
+                        <span className="ms" style={{ fontSize: 20, color: BRAND }}>usb</span>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>连接真机</span>
                       </div>
-                      <div style={{ fontSize: 11.5, color: '#7A8290', lineHeight: 1.6 }}>用自己插真机的电脑运行执行助手，独占执行、无需排队。</div>
+                      <div style={{ fontSize: 12, color: '#7A8290', lineHeight: 1.7 }}>用自己插真机的电脑运行执行助手，手机连上后回到这里即可选到你的设备。</div>
                     </div>
                     {/* 选项二：远程真机(Sonic) */}
                     <div onClick={() => sonicDevices.length && setMobileMode('remote')}
-                      style={{ flex: 1, cursor: sonicDevices.length ? 'pointer' : 'not-allowed', opacity: sonicDevices.length ? 1 : 0.55, border: `1.5px solid ${mobileMode === 'remote' ? BRAND : '#E7ECF0'}`, background: mobileMode === 'remote' ? '#FFF7F3' : '#fff', borderRadius: 11, padding: '13px 14px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                        <span className="ms" style={{ fontSize: 18, color: BRAND }}>cloud</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>远程真机</span>
+                      style={{ flex: 1, cursor: sonicDevices.length ? 'pointer' : 'not-allowed', opacity: sonicDevices.length ? 1 : 0.55, border: `1.5px solid ${mobileMode === 'remote' ? BRAND : '#E7ECF0'}`, background: mobileMode === 'remote' ? '#FFF7F3' : '#fff', borderRadius: 12, padding: '16px 18px', transition: 'all .15s' }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 9, marginBottom: 7 }}>
+                        <span className="ms" style={{ fontSize: 20, color: BRAND }}>cloud</span>
+                        <span style={{ fontSize: 14, fontWeight: 700, color: '#0F172A' }}>远程真机</span>
+                        {sonicDevices.length > 0 && <span style={{ fontSize: 10.5, color: '#B5600A', background: '#FEF3EE', borderRadius: 999, padding: '1px 8px', marginLeft: 'auto' }}>{sonicDevices.length} 台在线</span>}
                       </div>
-                      <div style={{ fontSize: 11.5, color: '#7A8290', lineHeight: 1.6 }}>
-                        {sonicDevices.length ? `Sonic 云真机 ${sonicDevices.length} 台可选，无需本地设备。` : '暂无在线远程真机。'}
-                      </div>
-                    </div>
-                    {/* 选项三：使用公共设备 */}
-                    <div onClick={() => publicDevices.length && setMobileMode('public')}
-                      style={{ flex: 1, cursor: publicDevices.length ? 'pointer' : 'not-allowed', opacity: publicDevices.length ? 1 : 0.55, border: `1.5px solid ${mobileMode === 'public' ? BRAND : '#E7ECF0'}`, background: mobileMode === 'public' ? '#FFF7F3' : '#fff', borderRadius: 11, padding: '13px 14px' }}>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                        <span className="ms" style={{ fontSize: 18, color: BRAND }}>devices</span>
-                        <span style={{ fontSize: 13, fontWeight: 700, color: '#0F172A' }}>使用公共设备</span>
-                      </div>
-                      <div style={{ fontSize: 11.5, color: '#7A8290', lineHeight: 1.6 }}>
-                        {publicDevices.length ? `公共测试机 ${publicDevices[0].model}，多人共用需排队。` : '暂无在线公共设备。'}
+                      <div style={{ fontSize: 12, color: '#7A8290', lineHeight: 1.7 }}>
+                        {sonicDevices.length ? 'Sonic 云真机，无需本地设备，即选即用；执行时自动占用、用完释放。' : '暂无在线远程真机。'}
                       </div>
                     </div>
                   </div>
@@ -553,25 +604,6 @@ export default function ExecConfigModal({
                     </div>
                   )}
 
-                  {/* 选「使用公共设备」→ 排队提醒 */}
-                  {mobileMode === 'public' && publicDevices.length > 0 && (
-                    <div style={{ marginTop: 12, background: appQueue > 0 ? '#FFFBF0' : '#F0FBF4', border: `1px solid ${appQueue > 0 ? '#F9E2A0' : '#B7E4C7'}`, borderRadius: 11, padding: '13px 15px', display: 'flex', gap: 11 }}>
-                      <span className="ms" style={{ fontSize: 18, color: appQueue > 0 ? '#E8930C' : '#128A43', marginTop: 1 }}>{appQueue > 0 ? 'schedule' : 'check_circle'}</span>
-                      <div style={{ fontSize: 12.5, lineHeight: 1.75 }}>
-                        {appQueue > 0 ? (
-                          <>
-                            <span style={{ fontWeight: 600, color: '#A16207' }}>公共设备当前有 {appQueue} 个 App 用例待执行/执行中</span>
-                            <div style={{ color: '#92400E' }}>你的 {mobileCases.length} 条 App 用例将排队按序执行，等待时间较长。若急用建议改用「连接真机」独占执行。</div>
-                          </>
-                        ) : (
-                          <>
-                            <span style={{ fontWeight: 600, color: '#128A43' }}>公共设备空闲，可立即执行</span>
-                            <div style={{ color: '#3F7A56' }}>你的 {mobileCases.length} 条 App 用例将派发到公共测试机执行。</div>
-                          </>
-                        )}
-                      </div>
-                    </div>
-                  )}
                 </div>
               )}
 
@@ -590,10 +622,10 @@ export default function ExecConfigModal({
                         return (
                           <div key={app} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
                             <span style={{ ...platformTagStyle(app), margin: 0, fontSize: 12, borderRadius: 7, padding: '2px 8px', whiteSpace: 'nowrap' }}>{app}</span>
-                            <Select style={{ flex: 1 }} size="middle" placeholder={opts.length ? '选择包版本' : '暂无可选包（接口待接入）'}
+                            <Select style={{ flex: 1 }} size="middle" placeholder={opts.length ? '选择包版本' : `该端暂无构建包（Jenkins 无「${app}」）`}
                               value={pkgSel[app]} onChange={(v) => setPkgSel((prev) => ({ ...prev, [app]: v }))}
                               options={opts.map((o) => ({ value: o.id, label: o.label }))}
-                              notFoundContent="暂无可选包（包版本查询接口待接入）"
+                              notFoundContent={`该端在 Jenkins 暂无安卓构建包（查询项目名「${app}」）`}
                               dropdownStyle={{ zIndex: 1300 }} />
                           </div>
                         )
@@ -601,6 +633,46 @@ export default function ExecConfigModal({
                       <div style={{ fontSize: 11.5, color: '#B0BAC4' }}>不选包版本的 app 维持原样不换包；无论本地/远程/公共设备都会卸旧装新。</div>
                     </div>
                   )}
+                </div>
+              )}
+
+              {/* App 自动登录：环境(枚举 app_env) + 账号(手机号，每次手输) + 验证码(默认SIT码，可按环境改) + 期望租户(仅Android App)。 */}
+              {appPlatforms.length > 0 && (
+                <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px dashed #E7ECF0' }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#0F172A', marginBottom: 10 }}>App 自动登录 <span style={{ fontSize: 11.5, fontWeight: 400, color: '#94A3B8', marginLeft: 6 }}>执行前自动登录（手机号+验证码）</span></div>
+                  <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                    <div style={{ flex: '1 1 160px' }}>
+                      <div style={{ fontSize: 12, color: '#64748B', marginBottom: 6 }}>环境</div>
+                      <Select size="middle" style={{ width: '100%' }} value={appEnv || undefined} onChange={setAppEnv}
+                        placeholder={appEnvOptions.length ? '选择环境' : '请先在枚举管理配置 app_env'}
+                        options={appEnvOptions.map((e) => ({ value: e.key, label: e.label }))} dropdownStyle={{ zIndex: 1300 }} />
+                    </div>
+                    <div style={{ flex: '1 1 160px' }}>
+                      <div style={{ fontSize: 12, color: '#64748B', marginBottom: 6 }}>登录账号（手机号）</div>
+                      <FavInput value={appAccount} onChange={setAppAccount} placeholder="每次执行手动输入" kind="phone" />
+                    </div>
+                    {/* 验证码默认不展示(固定 SIT 码 768235，无需输入)；非 SIT 环境点「改验证码」再填 */}
+                    {showCode && (
+                      <div style={{ flex: '1 1 120px' }}>
+                        <div style={{ fontSize: 12, color: '#64748B', marginBottom: 6 }}>验证码</div>
+                        <Input size="middle" value={appCode} onChange={(e) => setAppCode(e.target.value)} placeholder="默认SIT固定码" />
+                      </div>
+                    )}
+                    {/* 期望租户：仅对【配方配了需要选租户】的端(Android App/Android App等)显示(选填)；不填=不切。 */}
+                    {needTenant && (
+                      <div style={{ flex: '1 1 160px' }}>
+                        <div style={{ fontSize: 12, color: '#64748B', marginBottom: 6 }}>期望租户（选填）</div>
+                        <FavInput value={appTenant} onChange={setAppTenant} placeholder="登录后自动切到该租户/租户" kind="tenant" />
+                      </div>
+                    )}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: '#B0BAC4', marginTop: 8 }}>
+                    登录态在执行批次内复用（换测试包会自动重登）。验证码默认用 SIT 固定码、无需填写；
+                    {!showCode
+                      ? <span onClick={() => setShowCode(true)} style={{ color: '#2563EB', cursor: 'pointer' }}>非 SIT 环境点此改验证码</span>
+                      : <span onClick={() => { setShowCode(false); setAppCode('768235') }} style={{ color: '#94A3B8', cursor: 'pointer' }}>用回默认验证码</span>}
+                    。账号/验证码错误会快速失败并提示，不再卡在登录页。
+                  </div>
                 </div>
               )}
             </div>
@@ -614,7 +686,7 @@ export default function ExecConfigModal({
           )}
           <button onClick={onCancel} style={{ height: 38, padding: '0 20px', background: '#fff', border: '1px solid #E7ECF0', borderRadius: 10, fontSize: 13.5, color: '#64748B', cursor: 'pointer' }}>取消</button>
           {executableCount > 0 && (
-            <button disabled={inExec} onClick={() => !inExec && onConfirm('fresh', buildOverrides(), selectedDevice ?? null, execEnv, buildPackageOverrides())}
+            <button disabled={inExec} onClick={() => !inExec && onConfirm('fresh', buildOverrides(), effectiveTargetDevice, execEnv, buildPackageOverrides(), buildAppLogin())}
               style={{ height: 38, padding: '0 20px', borderRadius: 10, fontSize: 13.5, fontWeight: 600, border: 'none', cursor: inExec ? 'not-allowed' : 'pointer', background: inExec ? '#E7ECF0' : BRAND_GRAD, color: inExec ? '#94A3B8' : '#fff', boxShadow: inExec ? 'none' : '0 4px 14px -5px rgba(217,119,87,.5)' }}>
               {execLabel}
             </button>

@@ -3,7 +3,7 @@ from .schemas import (
     ConfirmationPoint, ConfirmationPointUpdate, IssuePoint, AnalysisResult,
     RequirementCreate, RequirementOut, RequirementUpdate, FeishuLinkSyncRequest,
     SliceCreate, SliceUpdate, SliceOut,
-    TestStep, TestCaseCreate, TestCaseOut, CaseReviewAction, BatchCaseReviewAction,
+    TestStep, CoveredItem, TestCaseCreate, TestCaseOut, CaseReviewAction, BatchCaseReviewAction,
     BatchNoConfirmRequest, PlatformsConfirmRequest,
     ExecutionCreate, ExecutionOut,
     BlockingReason, CIGateResult,

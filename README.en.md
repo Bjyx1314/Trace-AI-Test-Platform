@@ -1,4 +1,4 @@
-# TraceAI Test Platform
+﻿# TraceAI Test Platform
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Backend](https://img.shields.io/badge/backend-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
@@ -10,7 +10,7 @@
 
 TraceAI is an AI-assisted quality collaboration and validation platform for teams. It covers requirement analysis, validation case generation, API/Web/App execution, defect review, and quality gates, and is built with FastAPI, React, PostgreSQL, Redis, Playwright, and Android device helpers.
 
-> The project is still in an early stage. Evaluate it in an isolated environment first, and do not commit production secrets, real customer data, or live sessions into the repository.
+> The project is still in an early stage. Evaluate it in an isolated environment first, and do not commit production secrets, real item data, or live sessions into the repository.
 
 ## Who It Is For
 
@@ -51,7 +51,7 @@ TraceAI is an AI-assisted quality collaboration and validation platform for team
 - API execution can resolve target environments from structured case metadata such as `tags.api_spec.service` or `tags.api_spec.base_url`, which helps reuse host mappings maintained by external API frameworks.
 - Execution routing can follow platform enum `parent_key` values instead of relying only on historical hard-coded platform names.
 - If an App case is misclassified into PC/Web, the runner stops with an explicit error instead of falling back to the wrong site.
-- The desktop Web AI runner can now adopt newly opened tabs or windows after a click, which is useful for CRM and reporting systems that commonly open new pages.
+- The desktop Web AI runner can now adopt newly opened tabs or windows after a click, which is useful for 工作台 and reporting systems that commonly open new pages.
 - Temporary Web login can receive the current environment base URL, and when no external framework mapping exists for a platform, it can fall back to a generic username/password login flow.
 
 ## Core Modules

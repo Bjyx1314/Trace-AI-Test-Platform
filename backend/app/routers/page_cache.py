@@ -18,7 +18,10 @@ from app.services.page_cache_service import (
     is_stale,
     STALE_AFTER_DAYS,
 )
-from app.services.page_recorder import record_pages, playwright_cli, RecorderError
+from app.services.page_recorder import (
+    record_pages, playwright_cli, RecorderError,
+    start_session, list_sessions, get_session, close_session,
+)
 
 router = APIRouter(prefix="/api/page-cache", tags=["page-cache"])
 
@@ -226,6 +229,12 @@ async def report_cache_diff(body: PageCacheDiffReport, db: AsyncSession = Depend
     db.add(diff)
     await db.commit()
     await db.refresh(diff)
+    # 阶段四：页面结构变化 → 命中该页面的用例标 regression_flag=need_adjust
+    try:
+        from app.services.case_reuse import mark_cases_need_adjust_by_page
+        await mark_cases_need_adjust_by_page(db, body.project_id, pattern)
+    except Exception:  # noqa: BLE001
+        pass
     return _diff_to_dict(diff)
 
 
@@ -318,7 +327,7 @@ class ExploreRequest(BaseModel):
     overwrite=True（或仅传需重新缓存的路径）时强制重新缓存。
     """
     project_id: str
-    base_url: str  # 已配置的 PC 端基础地址，如 https://app.example.test
+    base_url: str  # 已配置的 PC 端基础地址，如 http://localhost:3000
     paths: list[ExplorePathItem] = []
     overwrite: bool = False
 
@@ -482,6 +491,13 @@ async def record_pages_endpoint(body: RecordRequest, db: AsyncSession = Depends(
     except RecorderError as e:
         raise HTTPException(400, str(e))
 
+    return await _ingest_recorded(db, body.project_id, body.base_url, entries, body.overwrite)
+
+
+async def _ingest_recorded(db: AsyncSession, project_id: str, base_url: str,
+                           entries: list[dict], overwrite: bool) -> dict:
+    """把解析出的录制页面条目 upsert 进共享缓存。overwrite=False 时已存在页面收集到
+    existing_paths 并跳过；overwrite=True 时覆盖刷新。供阻塞式 /record 与会话式 commit 复用。"""
     created = 0
     updated = 0
     existing_paths: list[dict] = []
@@ -494,17 +510,17 @@ async def record_pages_endpoint(body: RecordRequest, db: AsyncSession = Depends(
 
         existing = (await db.execute(
             select(PageStructureCache).where(
-                PageStructureCache.project_id == body.project_id,
+                PageStructureCache.project_id == project_id,
                 PageStructureCache.url_pattern == pattern,
             )
         )).scalars().first()
 
-        if existing and not body.overwrite:
+        if existing and not overwrite:
             existing_paths.append({"url_pattern": pattern, "page_name": existing.page_name})
             continue
 
         if existing:
-            existing.base_url = body.base_url
+            existing.base_url = base_url
             existing.page_name = pattern
             existing.dom_hash = dom_hash
             existing.regions = regions
@@ -514,8 +530,8 @@ async def record_pages_endpoint(body: RecordRequest, db: AsyncSession = Depends(
             updated += 1
         else:
             entry = PageStructureCache(
-                project_id=body.project_id,
-                base_url=body.base_url,
+                project_id=project_id,
+                base_url=base_url,
                 url_pattern=pattern,
                 page_name=pattern,
                 dom_hash=dom_hash,
@@ -530,13 +546,91 @@ async def record_pages_endpoint(body: RecordRequest, db: AsyncSession = Depends(
 
     await db.commit()
     return {
-        "base_url": body.base_url,
+        "base_url": base_url,
         "recorded_count": created + updated,
         "created_count": created,
         "updated_count": updated,
         "existing_paths": existing_paths,
         "entries": result_dicts,
     }
+
+
+# ─── 会话式录制（多窗口）───────────────────────────────────────────────────────
+class RecordStartRequest(BaseModel):
+    project_id: str
+    base_url: str
+    start_path: str | None = None
+
+
+class RecordSessionAction(BaseModel):
+    session_id: str
+    overwrite: bool = False
+
+
+def _sess_view(s) -> dict:
+    """会话对外视图（不含进程句柄）。"""
+    return {
+        "session_id": s.session_id,
+        "base_url": s.base_url,
+        "start_path": s.start_path,
+        "status": s.status,          # recording | parsed | done | error
+        "error": s.error,
+        "created_count": s.created_count,
+        "updated_count": s.updated_count,
+        "existing_paths": s.existing_paths,
+        "page_count": len(s.entries),
+    }
+
+
+@router.post("/record/start")
+async def record_start(body: RecordStartRequest, db: AsyncSession = Depends(get_db)):
+    """非阻塞启动一个录制窗口。可并发多开；重复打开同一 target 时复用现有窗口（reused=True）。"""
+    proj = await db.get(Project, body.project_id)
+    if not proj:
+        raise HTTPException(404, "Project not found")
+    try:
+        sess, reused = start_session(body.project_id, body.base_url, body.start_path)
+    except RecorderError as e:
+        raise HTTPException(400, str(e))
+    return {"session": _sess_view(sess), "reused": reused}
+
+
+@router.get("/record/sessions")
+async def record_sessions(project_id: str, db: AsyncSession = Depends(get_db)):
+    """列出该项目所有录制会话状态；对刚结束（parsed）的会话自动入库并转为 done。
+    前端轮询此接口收集多窗口的录制结果。"""
+    sessions = list_sessions(project_id)
+    for s in sessions:
+        if s.status == "parsed":
+            res = await _ingest_recorded(db, s.project_id, s.base_url, s.entries, overwrite=False)
+            s.created_count = res["created_count"]
+            s.updated_count = res["updated_count"]
+            s.existing_paths = res["existing_paths"]
+            s.status = "done"
+    return {"sessions": [_sess_view(s) for s in sessions]}
+
+
+@router.post("/record/commit")
+async def record_commit(body: RecordSessionAction, db: AsyncSession = Depends(get_db)):
+    """对已结束会话按 overwrite 重新入库（用于用户确认覆盖已存在页面，复用已录内容不再弹窗）。"""
+    s = get_session(body.session_id)
+    if not s:
+        raise HTTPException(404, "录制会话不存在或已关闭")
+    if not s.entries:
+        raise HTTPException(400, "该会话未录到可用页面")
+    res = await _ingest_recorded(db, s.project_id, s.base_url, s.entries, body.overwrite)
+    s.created_count = res["created_count"]
+    s.updated_count = res["updated_count"]
+    s.existing_paths = res["existing_paths"]
+    s.status = "done"
+    return res
+
+
+@router.post("/record/close")
+async def record_close(body: RecordSessionAction):
+    """结束并移除一个录制会话（进程仍在则终止）。"""
+    close_session(body.session_id)
+    return {"ok": True}
 
 
 @router.post("/cleanup")

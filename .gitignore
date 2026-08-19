@@ -29,10 +29,6 @@ ENV/
 .env.local
 .env.*.local
 !.env.example
-*.pem
-*.key
-*.p12
-*.pfx
 
 # Local database
 *.db
@@ -76,15 +72,17 @@ login_tmp/
 backend/uploads/
 .playwright-mcp/
 
-# External frameworks and worker artifacts
-frameworks/
-worker-dist/
-fw-venv/
-tp-worker.json
-*.apk
-*.aab
-*.ipa
-
 # 机密：用户 AI key 映射，禁止提交
 ai-key-mapping.csv
 backend/_delbad.py
+
+# 本地调试截图(拉真机/页面抓图，不入库)
+tmp_*.jpg
+tmp_*.png
+traceai-*.png
+tc-*.jpg
+# 本地启动脚本
+start_local.bat
+# 本地草稿文档(未定稿，不入库；docs/ 下其余已跟踪文档不受影响)
+docs/UI设计需求-发给Claude.md
+docs/ui-screenshots/

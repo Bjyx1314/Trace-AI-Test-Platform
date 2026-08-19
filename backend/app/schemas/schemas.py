@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 from datetime import datetime
 from typing import Any, Optional
 from pydantic import BaseModel, Field
@@ -12,6 +12,10 @@ class ProjectCreate(BaseModel):
     case_id_prefix: str = "CASE"
     feishu_webhook: Optional[str] = None
     feishu_doc_url: Optional[str] = None
+    # 飞书项目(Meego)生产缺陷同步配置(留空则不启用)
+    feishu_project_space_id: Optional[str] = None
+    feishu_project_rootcause_field: Optional[str] = None
+    feishu_project_defect_filter: Optional[dict] = None
     ci_gate_enabled: bool = False
     pass_rate_threshold: float = 80.0
 
@@ -35,6 +39,7 @@ class ConfirmationPoint(BaseModel):
 class IssuePoint(BaseModel):
     issue_id: str
     description: str  # 需求文档原文中有争议/表述不清的内容片段（原文引用）
+    feature: Optional[str] = None  # 所属「二级功能」名(粗粒度)，用例按此归类分组；同一功能块的问题点共用
     module: Optional[str] = None  # 内部使用：供Agent2选择modules，不在UI展示
     platforms: list[str] = Field(default_factory=list)  # 内部使用：供Agent2选择platforms/case_type，不在UI展示
     confirmation_points: list[ConfirmationPoint] = Field(default_factory=list)
@@ -63,6 +68,7 @@ class RequirementOut(RequirementCreate):
     analysis_confirmation: Optional[str] = None
     source_record_id: Optional[str] = None
     owner_name: Optional[str] = None
+    participant_names: list[str] = Field(default_factory=list)
     slice_count: int = 0  # 该需求的「负责范围」数(不含默认全文)；>0 时列表行才可展开看切片
     created_at: datetime
     updated_at: datetime
@@ -120,6 +126,25 @@ class TestStep(BaseModel):
     seq: int
     action: str
     expected: str = ""
+    check_points: Optional[list[str]] = None  # 步骤级可核对判定锚点
+
+
+class CoveredItem(BaseModel):
+    """质量判断单元（方案 7.2）。内嵌 TestCase.covered_items，字段宽松容错。"""
+    item_id: Optional[str] = None
+    name: str
+    object: Optional[str] = None
+    action: Optional[str] = None
+    expected: Optional[str] = None
+    scenario_type: Optional[str] = None
+    risk_tags: list[str] = Field(default_factory=list)
+    sources: list[str] = Field(default_factory=list)
+    matched_rules: list[str] = Field(default_factory=list)
+    priority: Optional[str] = None
+    reason: Optional[str] = None
+    coverage_status: Optional[str] = None  # not_covered/covered/failed
+    source_issue_id: Optional[str] = None
+    model_config = {"extra": "allow"}
 
 
 class TestCaseCreate(BaseModel):
@@ -135,13 +160,23 @@ class TestCaseCreate(BaseModel):
     steps: list[TestStep] = Field(default_factory=list)
     expected_result: Optional[str] = None
     source_issue_point: Optional[str] = None
+    secondary_feature: Optional[str] = None  # 二级功能分组(从需求原文提取，脑图中间层)
     case_type: str = "ui"  # ui/api
     tags: Optional[list[str]] = None
+    # ── AI 质量闭环覆盖项 ──
+    covered_items: Optional[list[CoveredItem]] = None
+    sources: Optional[list[str]] = None
+    risk_tags: Optional[list[str]] = None
+    reason: Optional[str] = None
 
 
 class TestCaseOut(TestCaseCreate):
     id: str
     case_id: str
+    matched_rules: Optional[list[str]] = None
+    affected_page_nodes: Optional[list] = None
+    affected_api_nodes: Optional[list] = None
+    regression_flag: Optional[str] = None
     last_status: str
     script: Optional[str] = None
     script_path: Optional[str] = None
@@ -195,6 +230,9 @@ class ExecutionCreate(BaseModel):
     env: str = "sit"
     # App 换测试包：{app端名: 包版本id}。执行前按 app 解析下载链接，推到真机先卸旧包再装新包；不传=不换包。
     package_overrides: Optional[dict] = None
+    # App 自动登录：{app端key: {env(选环境名), account(手机号), tenant(期望租户,Android App), label(端名)}}。
+    # 装包后跑用例前按端配方 AI 视觉登录；验证码固定 768235。不传=不自动登录。
+    app_login: Optional[dict] = None
 
 
 class BlockingReason(BaseModel):
@@ -242,6 +280,10 @@ class TestResultOut(BaseModel):
     ai_diagnosis: Optional[dict[str, Any]] = None
     repair_suggestion: Optional[str] = None
     defect_status: str
+    # ── AI 质量闭环覆盖项级执行证据 ──
+    checked_points: Optional[list[Any]] = None
+    actual_visited_pages: Optional[list[Any]] = None
+    actual_api_calls: Optional[list[Any]] = None
     created_at: datetime
     model_config = {"from_attributes": True}
 
@@ -267,6 +309,10 @@ class DefectOut(BaseModel):
     external_ticket_id: Optional[str] = None
     external_ticket_url: Optional[str] = None
     duplicate_of_defect_id: Optional[str] = None
+    # ── AI 质量闭环：逃逸缺陷回溯 ──
+    source: Optional[str] = None  # execution/production/manual
+    covered_item_ids: Optional[list[Any]] = None
+    retrospect: Optional[dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     model_config = {"from_attributes": True}
@@ -307,6 +353,7 @@ class QualityGateConfigOut(BaseModel):
     enable_p1_failure_gate: bool
     pass_rate_wow_drop_threshold: float
     coverage_threshold: float
+    release_policy: str = "advisory"  # advisory/warn/block
     model_config = {"from_attributes": True}
 
 
@@ -317,6 +364,7 @@ class QualityGateConfigUpdate(BaseModel):
     enable_p1_failure_gate: Optional[bool] = None
     pass_rate_wow_drop_threshold: Optional[float] = None
     coverage_threshold: Optional[float] = None
+    release_policy: Optional[str] = None
 
 
 # ── Page Structure Cache（7.3）─────────────────────────────────────────────
@@ -360,6 +408,7 @@ class PipelineRequest(BaseModel):
     scope_image_tokens: Optional[list[str]] = None  # 选区内包含的图片 token(精确只发这些图)
     slice_id: Optional[str] = None  # 目标切片；为空或默认全文切片走需求级既有逻辑，非默认切片走切片级
     mode: Optional[str] = None  # 切片级分析/生成：full=全量(整段范围)，incremental=增量(仅新追加范围)；默认 full
+    supplement: Optional[str] = None  # 人工补充需求点(选填)：随分析/生成一并交给 AI，用于补足识别遗漏
 
 
 class PipelineStatus(BaseModel):

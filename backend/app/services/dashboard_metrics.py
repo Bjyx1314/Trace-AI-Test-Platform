@@ -137,12 +137,14 @@ async def collect_requirement_rows(
                 "releasability": s_rel,
             })
 
-        # 归属人筛选(落到切片)：需求 owner 或 任一切片 owner 命中才保留
+        participant_names = set(req.participant_names or [])
+
+        # 归属人筛选(落到切片/参与人)：需求 owner、任一切片 owner 或参与人命中才保留
         if owner:
             if owner == "__unassigned__":
                 if req.owner_name:
                     continue
-            elif req.owner_name != owner and owner not in slice_owners:
+            elif req.owner_name != owner and owner not in slice_owners and owner not in participant_names:
                 continue
 
         rows.append({
@@ -152,6 +154,7 @@ async def collect_requirement_rows(
             "status": req.status,
             "iteration": req.iteration,
             "owner_name": req.owner_name,
+            "participant_names": list(participant_names),
             "project_name": project_cache[req.project_id],
             "project_id": req.project_id,
             "total_cases": total,

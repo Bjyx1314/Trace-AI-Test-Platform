@@ -1,4 +1,4 @@
-"""通用键值配置(app_settings)。当前承载 SSO 对接认证地址。仅管理员可改。"""
+﻿"""通用键值配置(app_settings)。当前承载 SSO 对接认证地址。仅管理员可改。"""
 from __future__ import annotations
 
 from sqlalchemy import select
@@ -7,16 +7,40 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import settings
 from app.models import AppSetting
 
-# SSO 对接认证地址的配置键。
-SSO_URL_KEY = "external_sso_url"
-# 开源发行版不绑定任何组织的 SSO。管理员可在后台或环境变量中配置。
-DEFAULT_EXTERNAL_SSO_URL = ""
+# SSO 对接认证地址(external task system 地址)的配置键。
+SSO_URL_KEY = "external_task_sso_url"
+# 缺省值:对接 external task system 的默认地址。管理员可在后台改。
+DEFAULT_EXTERNAL_TASK_URL = "http://sso.example.test"
 
 # AI 模型配置键(后台可改，覆盖 .env)。
 AI_PROVIDER_KEY = "ai_provider"
 AI_MODEL_KEY = "ai_model"
 AI_BASE_URL_KEY = "ai_base_url"
 AI_API_KEY_KEY = "ai_api_key"
+
+# Guardian 集成配置键(后台可改，覆盖 .env)。
+GUARDIAN_ENABLED_KEY = "guardian_enabled"
+GUARDIAN_BASE_URL_KEY = "guardian_base_url"
+GUARDIAN_PAT_KEY = "guardian_pat"
+
+
+async def resolve_guardian_config(db: AsyncSession) -> dict:
+    """Guardian 集成生效配置。优先级：后台配置(app_settings) > .env(config)。
+    返回 {enabled, base_url, pat, product, timeout, max_files, pat_masked}(pat 不回明文)。
+    """
+    enabled_raw = await get_setting(db, GUARDIAN_ENABLED_KEY)
+    enabled = (enabled_raw == "1") if enabled_raw is not None else bool(settings.guardian_enabled)
+    base_url = (await get_setting(db, GUARDIAN_BASE_URL_KEY)) or settings.guardian_base_url or ""
+    pat = (await get_setting(db, GUARDIAN_PAT_KEY)) or settings.guardian_pat or ""
+    return {
+        "enabled": bool(enabled and base_url and pat),
+        "base_url": base_url.rstrip("/"),
+        "pat": pat,
+        "pat_masked": _mask(pat),
+        "product": settings.guardian_product,
+        "timeout": settings.guardian_timeout_sec,
+        "max_files": settings.guardian_max_impact_files,
+    }
 
 
 async def get_setting(db: AsyncSession, key: str) -> str | None:
@@ -64,11 +88,12 @@ def _mask(key: str | None) -> str:
     return (key[:5] + "***" + key[-4:]) if len(key) > 10 else "***"
 
 
-async def resolve_external_sso_url(db: AsyncSession) -> str:
-    """解析外部 SSO 地址。
-    优先级:后台配置(app_settings) > 环境变量 EXTERNAL_TASK_API_URL(config)。
+async def resolve_external_task_url(db: AsyncSession) -> str:
+    """SSO 对接的 external task system 地址。
+    优先级:后台配置(app_settings) > 环境变量 EXTERNAL_TASK_API_URL(config) > 默认 sso.example.test。
     """
     configured = await get_setting(db, SSO_URL_KEY)
     if configured:
         return configured.rstrip("/")
-    return (settings.external_task_api_url or DEFAULT_EXTERNAL_SSO_URL).rstrip("/")
+    # config.external_task_api_url 默认即 sso.example.test;dev 可用 env 覆盖为 localhost:3000。
+    return (settings.external_task_api_url or DEFAULT_EXTERNAL_TASK_URL).rstrip("/")

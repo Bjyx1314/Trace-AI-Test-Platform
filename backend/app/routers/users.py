@@ -1,4 +1,4 @@
-"""用户管理路由（仅管理员）：列出用户、修改角色、新增本地账号、禁用/启用。"""
+﻿"""用户管理路由（仅管理员）：列出用户、修改角色、新增本地账号、禁用/启用。"""
 import uuid
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -41,7 +41,7 @@ def _mask(key: str | None) -> str | None:
 def _user_dict(u: PlatformUser) -> dict:
     return {
         "id": u.id,
-        "external_user_id": u.external_user_id,
+        "external_task_user_id": u.external_task_user_id,
         "username": u.username,
         "name": u.name,
         "email": u.email,

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { message } from 'antd'
 import { authApi } from '../api'
@@ -48,7 +48,7 @@ export default function Login() {
   const [remember, setRemember] = useState(true)
   const [loading, setLoading] = useState(false)
 
-  // 已登录（含外部 SSO 换取的 JWT）直接进首页。
+  // 已登录(含 external task system 静默换取的 JWT)直接进首页，不展示登录表单
   useEffect(() => {
     if (localStorage.getItem('platform_jwt')) navigate('/', { replace: true })
   }, [])
@@ -119,7 +119,7 @@ export default function Login() {
 
           {/* 分段选择器 */}
           <div style={{ display: 'flex', background: '#F1F4F6', borderRadius: 11, padding: 3, gap: 2, marginBottom: 28 }}>
-            {([['password', '账号密码'], ['ldap', '域账号']] as const).map(([k, label]) => {
+            {([['password', '账号密码'], ['ldap', 'SSO']] as const).map(([k, label]) => {
               const on = tab === k
               return (
                 <div key={k} onClick={() => setTab(k)} style={{
@@ -155,7 +155,7 @@ export default function Login() {
           ) : (
             <div style={{ background: '#EDF7F2', border: '1px solid #B0DCC4', borderRadius: 10, padding: '13px 16px', display: 'flex', gap: 10 }}>
               <span className="ms" style={{ fontSize: 18, color: '#1F7A5A' }}>info</span>
-              <div style={{ fontSize: 12.5, color: '#1F7A5A', lineHeight: 1.7 }}>域账号(LDAP)登录暂未启用，请使用「账号密码」登录，或联系管理员开通。</div>
+              <div style={{ fontSize: 12.5, color: '#1F7A5A', lineHeight: 1.7 }}>SSO 登录暂未启用，请使用「账号密码」登录，或联系管理员开通。</div>
             </div>
           )}
 

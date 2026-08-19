@@ -5,11 +5,12 @@ import {
 } from 'antd'
 import {
   ArrowLeftOutlined, HistoryOutlined, FileTextOutlined, DeleteOutlined,
-  UndoOutlined, EditOutlined, ThunderboltOutlined,
+  UndoOutlined, EditOutlined, ThunderboltOutlined, LeftOutlined, RightOutlined,
 } from '@ant-design/icons'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { testCasesApi, enumsApi, frameworksApi, executionsApi } from '../api'
 import ExecConfigModal, { categorizeCaseByPlatform, isAutoExecutable } from '../components/ExecConfigModal'
+import CaseCoveredItemsBlock from '../components/CaseCoveredItemsBlock'
 import { useProjectStore } from '../store/projectStore'
 import { confirmDialog } from '../components/ConfirmModal'
 import { PANEL_CARD_STYLE, PRIMARY_COLOR } from '../styles/theme'
@@ -96,14 +97,13 @@ export default function TestCaseList() {
   // 执行测试：与需求详情一致 —— 打开按端分流的 ExecConfigModal，再 executionsApi.create
   const [execModalOpen, setExecModalOpen] = useState(false)
   const [pendingCaseIds, setPendingCaseIds] = useState<string[]>([])
-  const [execApiBaseUrl, setExecApiBaseUrl] = useState('')
 
   const openExecModal = (caseIds: string[]) => {
     setPendingCaseIds(caseIds)
     setExecModalOpen(true)
   }
 
-  const runExecution = async (caseIds: string[], runMode: string = 'fresh', accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>) => {
+  const runExecution = async (caseIds: string[], runMode: string = 'fresh', accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>, appLogin?: Record<string, any>) => {
     if (!selected) return
     try {
       await executionsApi.create({
@@ -115,6 +115,7 @@ export default function TestCaseList() {
         target_device: targetDevice ?? undefined,
         env: env || undefined,
         package_overrides: packageOverrides,
+        app_login: appLogin && Object.keys(appLogin).length ? appLogin : undefined,
       })
       message.success('已创建执行测试，正在后台运行')
       navigate('/executions')
@@ -123,7 +124,7 @@ export default function TestCaseList() {
     }
   }
 
-  const handleExecuteConfirm = async (runMode: string, accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>) => {
+  const handleExecuteConfirm = async (runMode: string, accountOverrides?: Record<string, any>, targetDevice?: string | null, env?: string, packageOverrides?: Record<string, string>, appLogin?: Record<string, any>) => {
     const targetCases = data.filter((c: any) => pendingCaseIds.includes(c.id))
     let executableCases = targetCases.filter((c: any) => isAutoExecutable(categorizeCaseByPlatform(c)))
     // 已连真机时，App 用例也纳入(AI 直连真机执行)
@@ -139,7 +140,7 @@ export default function TestCaseList() {
       return
     }
     setExecModalOpen(false)
-    await runExecution(executableCases.map((c: any) => c.id), runMode, accountOverrides, targetDevice, env, packageOverrides)
+    await runExecution(executableCases.map((c: any) => c.id), runMode, accountOverrides, targetDevice, env, packageOverrides, appLogin)
   }
 
   const runReview = async () => {
@@ -239,6 +240,27 @@ export default function TestCaseList() {
   const openDetail = (row: any) => {
     setSelected(row)
     setEditMode(false)
+  }
+
+  // 详情内「上一条/下一条」：基于当前筛选结果 filtered（内存全量，天然跨页），按 selected.id 定位
+  const detailIndex = selected ? filtered.findIndex((x) => x.id === selected.id) : -1
+  const gotoRelative = (delta: number) => {
+    if (detailIndex < 0) return
+    const target = filtered[detailIndex + delta]
+    if (target) { setSelected(target); setEditMode(false) }
+  }
+
+  // 详情内删除：软删除进回收站，删后自动跳到下一条（无则上一条），都没有则关闭
+  const handleDeleteDetail = async () => {
+    if (!selected) return
+    if (!(await confirmDialog({ title: '删除用例', desc: `确认删除「${selected.title}」？删除后进入回收站。`, ok: '删除', danger: true }))) return
+    const idx = detailIndex
+    await testCasesApi.delete(selected.id)
+    message.success('已删除')
+    const nextItem = filtered[idx + 1] || filtered[idx - 1] || null
+    setSelected(nextItem && nextItem.id !== selected.id ? nextItem : null)
+    setEditMode(false)
+    load()
   }
 
   const startEdit = () => {
@@ -591,9 +613,18 @@ export default function TestCaseList() {
       <Drawer
         title={
           <Space>
+            <Button.Group>
+              <Button size="small" icon={<LeftOutlined />} disabled={detailIndex <= 0}
+                onClick={() => gotoRelative(-1)} title="上一条" />
+              <Button size="small" icon={<RightOutlined />} disabled={detailIndex < 0 || detailIndex >= filtered.length - 1}
+                onClick={() => gotoRelative(1)} title="下一条" />
+            </Button.Group>
+            {detailIndex >= 0 && (
+              <span style={{ fontSize: 12, color: '#94A3B8', fontWeight: 400 }}>{detailIndex + 1}/{filtered.length}</span>
+            )}
             <span
               style={{
-                maxWidth: 380,
+                maxWidth: 320,
                 overflow: 'hidden',
                 textOverflow: 'ellipsis',
                 whiteSpace: 'nowrap',
@@ -624,6 +655,7 @@ export default function TestCaseList() {
                 onConfirm={() => runCommit(true)} onCancel={() => runCommit(false)}>
                 <Button loading={autoBusy === 'commit'} disabled={!selected?.generated_artifacts}>提交</Button>
               </Popconfirm>
+              <Button danger icon={<DeleteOutlined />} onClick={handleDeleteDetail}>删除</Button>
             </Space>
           )
         }
@@ -649,6 +681,10 @@ export default function TestCaseList() {
                 {(selected.platforms || []).map((p: string) => <Tag key={p} color="blue">{p}</Tag>)}
               </Descriptions.Item>
             </Descriptions>
+
+            <div style={{ marginTop: 16 }}>
+              <CaseCoveredItemsBlock caseId={selected.id} items={selected.covered_items} priority={selected.priority} />
+            </div>
 
             <List
               size="small"
@@ -869,8 +905,6 @@ export default function TestCaseList() {
         open={execModalOpen}
         cases={data.filter((c: any) => pendingCaseIds.includes(c.id))}
         categorizeCase={categorizeCaseByPlatform}
-        execApiBaseUrl={execApiBaseUrl}
-        setExecApiBaseUrl={setExecApiBaseUrl}
         onCancel={() => setExecModalOpen(false)}
         onConfirm={handleExecuteConfirm}
       />

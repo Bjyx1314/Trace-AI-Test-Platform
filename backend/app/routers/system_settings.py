@@ -1,4 +1,4 @@
-"""系统设置路由（仅管理员）：自动化用例生成开关（按端）。
+﻿"""系统设置路由（仅管理员）：自动化用例生成开关（按端）。
 
 控制"执行测试通过后是否生成自动化用例"——按不同端(接口/Web/App/鸿蒙/小程序)
 分别开关。读取与修改均要求管理员权限。
@@ -11,8 +11,9 @@ from app.database import get_db
 from app.dependencies import require_admin
 from app.services import automation_switch
 from app.services.app_settings import (
-    SSO_URL_KEY, DEFAULT_EXTERNAL_SSO_URL, get_setting, set_setting, resolve_external_sso_url,
+    SSO_URL_KEY, DEFAULT_EXTERNAL_TASK_URL, get_setting, set_setting, resolve_external_task_url,
     AI_PROVIDER_KEY, AI_MODEL_KEY, AI_BASE_URL_KEY, AI_API_KEY_KEY, apply_ai_settings_to_runtime,
+    GUARDIAN_ENABLED_KEY, GUARDIAN_BASE_URL_KEY, GUARDIAN_PAT_KEY, resolve_guardian_config,
 )
 
 router = APIRouter(prefix="/api/system", tags=["system"])
@@ -33,12 +34,18 @@ class SwitchUpdate(BaseModel):
 
 
 class SsoConfigUpdate(BaseModel):
-    external_sso_url: str
+    external_task_url: str
+
+
+class GuardianConfigUpdate(BaseModel):
+    enabled: bool = False
+    base_url: str = ""
+    pat: str | None = None  # 留空=保持原值，不覆盖
 
 
 class AiConfigUpdate(BaseModel):
     provider: str
-    model: str
+    model: str = ""
     base_url: str = ""
     api_key: str | None = None  # 留空=保持原值，不覆盖
 
@@ -84,19 +91,16 @@ async def update_ai_config(
     db: AsyncSession = Depends(get_db),
     current_admin: dict = Depends(require_admin),
 ):
-    """设置 AI 模型配置(管理员专用)。模型必填；api_key 留空=保持原值。"""
+    """设置 AI 模型配置(管理员专用)。各项留空=回落 .env;api_key 留空=保持原值。"""
     valid = {p["value"] for p in AI_PROVIDERS}
     if body.provider not in valid:
         raise HTTPException(400, f"provider 只能是 {', '.join(valid)} 之一")
-    model = body.model.strip()
-    if not model:
-        raise HTTPException(400, "AI 模型不能为空，平台不提供默认模型")
     base = (body.base_url or "").strip().rstrip("/")
     if base and not (base.startswith("http://") or base.startswith("https://")):
         raise HTTPException(400, "base_url 须以 http:// 或 https:// 开头")
     operator = current_admin.get("name") or current_admin.get("email") or current_admin.get("sub")
     await set_setting(db, AI_PROVIDER_KEY, body.provider, operator)
-    await set_setting(db, AI_MODEL_KEY, model, operator)
+    await set_setting(db, AI_MODEL_KEY, (body.model or "").strip(), operator)
     await set_setting(db, AI_BASE_URL_KEY, base, operator)
     # api_key 仅在传了非空值时更新，避免脱敏回显被当成新值覆盖
     if body.api_key:
@@ -105,16 +109,57 @@ async def update_ai_config(
     return {**current, "providers": AI_PROVIDERS}
 
 
+@router.get("/guardian-config")
+async def get_guardian_config(
+    db: AsyncSession = Depends(get_db),
+    _: dict = Depends(require_admin),
+):
+    """读取 Guardian 集成配置(管理员专用)。pat 仅脱敏回显。"""
+    cfg = await resolve_guardian_config(db)
+    return {"enabled": cfg["enabled"], "base_url": cfg["base_url"],
+            "pat_set": bool(cfg["pat"]), "pat_masked": cfg["pat_masked"],
+            "product": cfg["product"]}
+
+
+@router.put("/guardian-config")
+async def update_guardian_config(
+    body: GuardianConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_admin: dict = Depends(require_admin),
+):
+    """设置 Guardian 集成(管理员专用)。base_url 空=回落 .env；pat 空=保持原值；enabled 需 base_url+pat 齐才真生效。"""
+    base = (body.base_url or "").strip().rstrip("/")
+    if base and not (base.startswith("http://") or base.startswith("https://")):
+        raise HTTPException(400, "base_url 须以 http:// 或 https:// 开头")
+    operator = current_admin.get("name") or current_admin.get("email") or current_admin.get("sub")
+    await set_setting(db, GUARDIAN_ENABLED_KEY, "1" if body.enabled else "0", operator)
+    await set_setting(db, GUARDIAN_BASE_URL_KEY, base, operator)
+    if body.pat:
+        await set_setting(db, GUARDIAN_PAT_KEY, body.pat.strip(), operator)
+    cfg = await resolve_guardian_config(db)
+    return {"enabled": cfg["enabled"], "base_url": cfg["base_url"],
+            "pat_set": bool(cfg["pat"]), "pat_masked": cfg["pat_masked"], "product": cfg["product"]}
+
+
+@router.post("/guardian-ping")
+async def guardian_ping(
+    _: dict = Depends(require_admin),
+):
+    """联调：探测 Guardian 连通性(用当前生效配置)。"""
+    from app.services import guardian_client
+    return await guardian_client.ping()
+
+
 @router.get("/sso-config")
 async def get_sso_config(
     db: AsyncSession = Depends(get_db),
     _: dict = Depends(require_admin),
 ):
-    """读取外部 SSO 地址。management = 后台配置原值;resolved = 实际生效值。"""
+    """读取 SSO 对接认证地址(external task system 地址)。management = 后台配置原值;resolved = 实际生效值;default = 缺省。"""
     return {
-        "external_sso_url": await get_setting(db, SSO_URL_KEY) or "",
-        "resolved": await resolve_external_sso_url(db),
-        "default": DEFAULT_EXTERNAL_SSO_URL,
+        "external_task_url": await get_setting(db, SSO_URL_KEY) or "",
+        "resolved": await resolve_external_task_url(db),
+        "default": DEFAULT_EXTERNAL_TASK_URL,
     }
 
 
@@ -125,13 +170,13 @@ async def update_sso_config(
     current_admin: dict = Depends(require_admin),
 ):
     """设置 SSO 对接认证地址(管理员专用)。留空=回落默认/环境变量;非空须为 http(s):// 开头。"""
-    url = (body.external_sso_url or "").strip().rstrip("/")
+    url = (body.external_task_url or "").strip().rstrip("/")
     if url and not (url.startswith("http://") or url.startswith("https://")):
         raise HTTPException(400, "地址须以 http:// 或 https:// 开头")
     operator = current_admin.get("name") or current_admin.get("email") or current_admin.get("sub")
     await set_setting(db, SSO_URL_KEY, url, operator)
     return {
-        "external_sso_url": url,
-        "resolved": await resolve_external_sso_url(db),
-        "default": DEFAULT_EXTERNAL_SSO_URL,
+        "external_task_url": url,
+        "resolved": await resolve_external_task_url(db),
+        "default": DEFAULT_EXTERNAL_TASK_URL,
     }

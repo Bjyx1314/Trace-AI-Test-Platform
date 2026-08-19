@@ -1,4 +1,4 @@
-"""缺陷生命周期：执行失败生成待复核缺陷；再次通过/手动通过自动复核为「已解决」。
+﻿"""缺陷生命周期：执行失败生成待复核缺陷；再次通过/手动通过自动复核为「已解决」。
 
 状态：draft=待复核, confirmed=待处理, ticket_created=已建单, ignored/duplicate=无需处理, fixed=已解决
 """
@@ -67,7 +67,7 @@ async def create_defect_for_failure(db: AsyncSession, test_result: TestResult, t
 
 async def resolve_open_defects_for_case(db: AsyncSession, test_case_id: str, note: str = "") -> int:
     """用例再次通过/手动通过 → 把该用例所有未关闭缺陷自动复核为「已解决」(fixed)。
-    若缺陷已建到外部任务系统，尽力回写为 accepted。返回处理数量。"""
+    若缺陷已建到 external task system，best-effort 回写为 accepted。返回处理数量。"""
     open_defects = (await db.execute(
         select(Defect).where(
             Defect.test_case_id == test_case_id,
@@ -90,3 +90,44 @@ async def resolve_open_defects_for_case(db: AsyncSession, test_case_id: str, not
             except Exception:
                 pass
     return len(open_defects)
+
+
+async def on_defect_confirmed(db: AsyncSession, defect: Defect) -> None:
+    """缺陷被确认为真实缺陷（方案 11.4）：
+    1. found_bug_later 回填 —— 该用例相关的 Review 反馈标 found_bug_later=true；
+    2. 沉淀高置信经验（evidence.found_bug=true），并上调其关联经验 confidence。
+    失败不影响缺陷确认主流程。
+    """
+    from app.models import ReviewFeedback, Experience
+    from sqlalchemy import update
+    try:
+        # 回填该用例所有覆盖项反馈的 found_bug_later
+        await db.execute(
+            update(ReviewFeedback)
+            .where(ReviewFeedback.test_case_id == defect.test_case_id,
+                   ReviewFeedback.target_type == "covered_item")
+            .values(found_bug_later=True)
+        )
+        # 关联经验升权（这些反馈已沉淀的经验）
+        fbs = (await db.execute(
+            select(ReviewFeedback).where(
+                ReviewFeedback.test_case_id == defect.test_case_id,
+                ReviewFeedback.experience_id.isnot(None),
+            )
+        )).scalars().all()
+        for fb in fbs:
+            exp = await db.get(Experience, fb.experience_id)
+            if exp:
+                ev = dict(exp.evidence or {})
+                ev["found_bug"] = True
+                ev["bug_id"] = defect.id
+                exp.evidence = ev
+                exp.confidence = min(1.0, float(exp.confidence) + 0.15)
+                if exp.status == "candidate":
+                    exp.status = "active"
+        await db.commit()
+        # 独立沉淀一条缺陷经验
+        from app.services.experience_miner import sediment_from_bug
+        await sediment_from_bug(db, defect.id)
+    except Exception:  # noqa: BLE001
+        pass

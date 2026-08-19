@@ -1,15 +1,87 @@
+import logging
 from datetime import datetime
 from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query
 from fastapi.responses import Response
+from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.orm.attributes import flag_modified
 from app.database import get_db
 from app.dependencies import get_current_user
-from app.models import TestCase, TestCaseLog, Project, TestResult, Execution, Defect
+from app.models import TestCase, TestCaseLog, Project, TestResult, Execution, Defect, ReviewFeedback
 from app.schemas import TestCaseCreate, TestCaseOut, CaseReviewAction, BatchCaseReviewAction
+from app.agents.testcase_generator import normalize_covered_items
 
 router = APIRouter(prefix="/api/testcases", tags=["testcases"])
+logger = logging.getLogger(__name__)
+
+
+# ── 覆盖项 Review 请求体 ──
+class CoveredItemAdd(BaseModel):
+    name: str
+    object: str | None = None
+    action: str | None = None
+    expected: str | None = None
+    scenario_type: str | None = None
+    risk_tags: list[str] | None = None
+    priority: str | None = None
+    source: str = "tester_added"  # 单来源标记
+    reason: str | None = None
+
+
+class CoveredItemPatch(BaseModel):
+    name: str | None = None
+    object: str | None = None
+    action: str | None = None
+    expected: str | None = None
+    scenario_type: str | None = None
+    risk_tags: list[str] | None = None
+    priority: str | None = None
+    coverage_status: str | None = None
+    reason: str | None = None
+
+
+class CoveredItemDelete(BaseModel):
+    reason: str | None = None
+
+
+class RegenCheckpointsIn(BaseModel):
+    title: str = ""
+    steps: list[dict]  # [{action, expected, check_points?}]
+
+
+# test_cases 里这几列 NOT NULL 且有服务端默认('{}'/'[]')；schema 默认 None，写 None 会触发约束。
+# 落库前去掉值为 None 的这些键，让服务端默认生效（既修编辑 500，也防生成整批回滚）。
+_NOTNULL_LIST_COLS = ("sources", "covered_items", "risk_tags", "matched_rules")
+
+
+def _drop_none_notnull(d: dict) -> dict:
+    return {k: v for k, v in d.items() if not (k in _NOTNULL_LIST_COLS and v is None)}
+
+
+def _sync_case_source_tags(tc: TestCase) -> None:
+    """依据 covered_items 重算用例级 sources / risk_tags 并集。"""
+    srcs: list[str] = []
+    tags: list[str] = []
+    for ci in tc.covered_items or []:
+        for s in ci.get("sources") or []:
+            if s not in srcs:
+                srcs.append(s)
+        for t in ci.get("risk_tags") or []:
+            if t not in tags:
+                tags.append(t)
+    tc.sources = srcs or (tc.sources or [])
+    tc.risk_tags = tags
+
+
+async def _sync_vec(db: AsyncSession, tc: TestCase) -> None:
+    """覆盖项变更后同步向量索引（阶段四），失败不阻塞。"""
+    try:
+        from app.services.covered_item_vec import sync_case_vectors
+        await sync_case_vectors(db, tc)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def _operator_name(current_user: dict | None) -> str:
@@ -106,6 +178,24 @@ async def _write_log(db: AsyncSession, tc: TestCase, operation: str, snapshot: d
     ))
 
 
+@router.post("/regen-checkpoints")
+async def regen_checkpoints(body: RegenCheckpointsIn, db: AsyncSession = Depends(get_db),
+                            current_user: dict = Depends(get_current_user)):
+    """按当前步骤(操作/预期)用 AI 重新生成每步判定锚点，返回带新锚点的步骤（供编辑表单一键刷新，不落库）。"""
+    from app.services.ai_key import resolve_user_ai_key, NoAiKeyError
+    from app.agents.llm import set_current_ai_key
+    from app.agents.testcase_generator import gen_check_points
+    try:
+        ai_key = await resolve_user_ai_key(db, current_user)
+    except NoAiKeyError as e:
+        raise HTTPException(400, str(e))
+    set_current_ai_key(ai_key)
+    cps = await gen_check_points(body.title or "", body.steps or [])
+    steps = [{**s, "check_points": (cps[i] if i < len(cps) else (s.get("check_points") or []))}
+             for i, s in enumerate(body.steps or [])]
+    return {"steps": steps}
+
+
 @router.get("", response_model=list[TestCaseOut])
 async def list_testcases(
     project_id: str | None = None,
@@ -167,7 +257,23 @@ async def create_testcase(body: TestCaseCreate, db: AsyncSession = Depends(get_d
     if not project:
         raise HTTPException(404, "Project not found")
 
-    tc = TestCase(**body.model_dump(), case_id=await _generate_case_id(db, project))
+    data = _drop_none_notnull(body.model_dump())
+    # 手工新增用例：自动为每个步骤生成判定锚点（与「按步骤重新生成锚点」同口径）。
+    # AI Key 缺失或生成失败均不阻断创建，退化为无锚点。
+    steps = data.get("steps") or []
+    if steps:
+        try:
+            from app.services.ai_key import resolve_user_ai_key
+            from app.agents.llm import set_current_ai_key
+            from app.agents.testcase_generator import gen_check_points
+            set_current_ai_key(await resolve_user_ai_key(db, current_user))
+            cps = await gen_check_points(data.get("title") or "", steps)
+            data["steps"] = [{**s, "check_points": (cps[i] if i < len(cps) else (s.get("check_points") or []))}
+                             for i, s in enumerate(steps)]
+        except Exception as e:  # noqa: BLE001 生成锚点失败不阻断新增
+            logger.warning("新增用例自动生成锚点失败，跳过：%s", e)
+
+    tc = TestCase(**data, case_id=await _generate_case_id(db, project))
     # 手工新增：无关联需求(直接进库)即纳入用例库；挂到需求下的则等执行通过再纳入
     tc.in_library = tc.requirement_id is None
     db.add(tc)
@@ -190,6 +296,118 @@ async def batch_review_cases(body: BatchCaseReviewAction, db: AsyncSession = Dep
         count += 1
     await db.commit()
     return {"status": "ok", "count": count}
+
+
+# ── 覆盖项 Review：增删改（挂 testcase 子资源，写 ReviewFeedback 留痕）─────────
+@router.post("/backfill-covered-items", status_code=200)
+async def trigger_backfill_covered_items(
+    project_id: str | None = None,
+    limit: int = Query(200, ge=1, le=1000),
+    only_in_library: bool = False,
+    current_user: dict = Depends(get_current_user),
+):
+    """触发存量用例覆盖项批量回填（方案 10.4-②）。同步执行一批并返回统计。"""
+    from app.services.covered_item_backfill import backfill_project
+    return await backfill_project(project_id=project_id, limit=limit, only_in_library=only_in_library)
+
+
+@router.get("/backfill-covered-items/pending", status_code=200)
+async def count_backfill_pending(project_id: str | None = None):
+    from app.services.covered_item_backfill import count_pending
+    return {"pending": await count_pending(project_id=project_id)}
+
+
+@router.post("/{tc_id}/covered-items", status_code=200)
+async def add_covered_item(tc_id: str, body: CoveredItemAdd, db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    tc = await db.get(TestCase, tc_id)
+    if not tc or tc.deleted_at is not None:
+        raise HTTPException(404, "用例不存在")
+    raw = body.model_dump()
+    reason = raw.pop("reason", None)
+    src = raw.pop("source", "tester_added")
+    raw["sources"] = [src]
+    if reason:
+        raw["reason"] = reason
+    new_items = normalize_covered_items([raw], default_sources=[src])
+    if not new_items:
+        raise HTTPException(400, "覆盖项内容为空")
+    tc.covered_items = list(tc.covered_items or []) + new_items
+    flag_modified(tc, "covered_items")
+    _sync_case_source_tags(tc)
+    fb = ReviewFeedback(
+        test_case_id=tc.id, requirement_id=tc.requirement_id, target_type="covered_item",
+        action="add_item", before=None, after=new_items[0], reason=reason,
+        operator=_operator_name(current_user),
+    )
+    db.add(fb)
+    await db.commit()
+    await db.refresh(tc)
+    await _sync_vec(db, tc)
+    # 阶段三：测试补充覆盖项 → 沉淀经验候选（失败不影响主流程）
+    try:
+        from app.services.experience_miner import sediment_from_feedback
+        await sediment_from_feedback(db, fb.id)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"status": "ok", "covered_items": tc.covered_items}
+
+
+@router.patch("/{tc_id}/covered-items/{item_id}", status_code=200)
+async def update_covered_item(tc_id: str, item_id: str, body: CoveredItemPatch, db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    tc = await db.get(TestCase, tc_id)
+    if not tc or tc.deleted_at is not None:
+        raise HTTPException(404, "用例不存在")
+    items = list(tc.covered_items or [])
+    idx = next((i for i, ci in enumerate(items) if ci.get("item_id") == item_id), None)
+    if idx is None:
+        raise HTTPException(404, "覆盖项不存在")
+    before = dict(items[idx])
+    patch = {k: v for k, v in body.model_dump().items() if v is not None}
+    reason = patch.pop("reason", None)
+    items[idx] = {**items[idx], **patch}
+    tc.covered_items = items
+    flag_modified(tc, "covered_items")
+    _sync_case_source_tags(tc)
+    fb = ReviewFeedback(
+        test_case_id=tc.id, requirement_id=tc.requirement_id, target_type="covered_item",
+        action="edit_item", before=before, after=items[idx], reason=reason,
+        operator=_operator_name(current_user),
+    )
+    db.add(fb)
+    await db.commit()
+    await db.refresh(tc)
+    await _sync_vec(db, tc)
+    # 阶段三：测试修改覆盖项 → 沉淀纠正经验候选（失败不影响主流程）
+    try:
+        from app.services.experience_miner import sediment_from_edit
+        await sediment_from_edit(db, fb.id)
+    except Exception:  # noqa: BLE001
+        pass
+    return {"status": "ok", "covered_items": tc.covered_items}
+
+
+@router.delete("/{tc_id}/covered-items/{item_id}", status_code=200)
+async def delete_covered_item(tc_id: str, item_id: str, body: CoveredItemDelete | None = None, db: AsyncSession = Depends(get_db), current_user: dict = Depends(get_current_user)):
+    tc = await db.get(TestCase, tc_id)
+    if not tc or tc.deleted_at is not None:
+        raise HTTPException(404, "用例不存在")
+    items = list(tc.covered_items or [])
+    idx = next((i for i, ci in enumerate(items) if ci.get("item_id") == item_id), None)
+    if idx is None:
+        raise HTTPException(404, "覆盖项不存在")
+    removed = items.pop(idx)
+    tc.covered_items = items
+    flag_modified(tc, "covered_items")
+    _sync_case_source_tags(tc)
+    db.add(ReviewFeedback(
+        test_case_id=tc.id, requirement_id=tc.requirement_id, target_type="covered_item",
+        action="delete_item", before=removed, after=None,
+        reason=(body.reason if body else None), operator=_operator_name(current_user),
+    ))
+    await db.commit()
+    await db.refresh(tc)
+    await _sync_vec(db, tc)
+    return {"status": "ok", "covered_items": tc.covered_items}
 
 
 @router.get("/export")
@@ -304,6 +522,7 @@ async def get_testcase_results(tc_id: str, db: AsyncSession = Depends(get_db)):
             "screenshot_url": r.TestResult.screenshot_url,
             "api_trace": r.TestResult.api_trace,
             "ui_trace": r.TestResult.ui_trace,
+            "ai_diagnosis": r.TestResult.ai_diagnosis,
             "created_at": r.TestResult.created_at.isoformat() if r.TestResult.created_at else None,
         }
         for r in rows
@@ -355,7 +574,8 @@ async def update_testcase(tc_id: str, body: TestCaseCreate, db: AsyncSession = D
     tc = await db.get(TestCase, tc_id)
     if not tc or tc.deleted_at is not None:
         raise HTTPException(404, "TestCase not found")
-    for k, v in body.model_dump().items():
+    # 只更新客户端实际传的字段(exclude_unset)，并丢弃 NOT NULL 列的 None，避免把 sources 等写成 NULL → 500
+    for k, v in _drop_none_notnull(body.model_dump(exclude_unset=True)).items():
         setattr(tc, k, v)
     await db.flush()
     await _write_log(db, tc, "update", _tc_snapshot(tc), _operator_name(current_user))

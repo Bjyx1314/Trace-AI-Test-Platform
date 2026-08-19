@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import {
   Button, Tag, Space, Modal, Form, Input, Select, message,
   Typography, Card, Descriptions, Empty, Collapse,
@@ -255,10 +255,10 @@ export default function FrameworkRepos() {
             </Form.Item>
           </Space>
           <Form.Item name="git_url" label="Git URL" rules={[{ required: true }]}>
-            <Input placeholder="https://github.com/your-org/automation-framework.git" />
+            <Input placeholder="http://git.example.test/platform2.0/test/xxx.git" />
           </Form.Item>
           <Form.Item name="local_path" label="本地路径（可选，已 clone 时直接扫描这里，免联网）">
-            <Input placeholder="D:/automation/api 或留空由平台 clone 到工作区" />
+            <Input placeholder="D:/BIG_Inter 或留空由平台 clone 到工作区" />
           </Form.Item>
           <Space style={{ display: 'flex' }} align="start">
             <Form.Item name="tests_root" label="用例根" style={{ flex: 1 }}>

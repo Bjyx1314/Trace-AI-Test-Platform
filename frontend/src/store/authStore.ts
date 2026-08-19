@@ -1,7 +1,7 @@
-import { create } from 'zustand'
+﻿import { create } from 'zustand'
 
 export interface PlatformUser {
-  sub: string          // 平台账号或外部 SSO 用户标识
+  sub: string          // external_task_user_id
   role: 'admin' | 'user'
   name: string
   email: string

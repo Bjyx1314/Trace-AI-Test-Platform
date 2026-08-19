@@ -1,4 +1,4 @@
-"""认证服务：验证外部 SSO token，管理平台用户角色，签发平台 JWT。"""
+﻿"""认证服务：验证 external task system token，管理平台用户角色，签发平台 JWT。"""
 from __future__ import annotations
 import time
 import uuid
@@ -61,21 +61,44 @@ def verify_platform_jwt(token: str) -> dict | None:
         return None
 
 
-# ── 外部 SSO token 验证 ──────────────────────────────────────────────────────
+# ── external task system token 验证（现阶段 mock）──────────────────────────────────────
 
-async def verify_external_sso_token(token: str, base_url: str | None = None) -> dict | None:
+def _external_task_user_id(data: dict) -> str:
+    """从 SSO userinfo 响应中取平台用于绑定用户的外部 id。
+
+    subkey 是当前稳定身份口径；保留 id/user_id 作为旧接口兜底。
     """
-    调用外部 SSO API 验证 token，返回用户信息 {user_id, email, name}。
-    base_url 可由后台配置；不传则使用 config.external_task_api_url。
+    return str(
+        data.get("subkey")
+        or data.get("subKey")
+        or data.get("sub_key")
+        or data.get("id")
+        or data.get("user_id")
+        or ""
+    ).strip()
+
+
+def _external_task_legacy_user_ids(data: dict) -> list[str]:
+    primary = _external_task_user_id(data)
+    ids: list[str] = []
+    for key in ("id", "user_id"):
+        value = str(data.get(key) or "").strip()
+        if value and value != primary and value not in ids:
+            ids.append(value)
+    return ids
+
+async def verify_external_task_token(token: str, base_url: str | None = None) -> dict | None:
+    """
+    调用 external task system API 验证 token，返回用户信息 {user_id, email, name}。
+    base_url = SSO 对接认证地址(后台可配,见 services/app_settings.resolve_external_task_url);
+    不传则回落 config.external_task_api_url。token 无效返回 None。
     """
     if settings.mock_mode:
         # mock：token 直接作为 user_id，name 固定
         return {"user_id": token or "mock-user-001", "email": f"{token or 'mock'}@mock.com",
                 "name": "Mock用户", "username": token or "mock-user-001"}
 
-    api_base = (base_url or settings.external_task_api_url or "").rstrip("/")
-    if not api_base:
-        return None
+    api_base = (base_url or settings.external_task_api_url).rstrip("/")
     try:
         async with httpx.AsyncClient(timeout=5) as client:
             resp = await client.get(
@@ -86,32 +109,39 @@ async def verify_external_sso_token(token: str, base_url: str | None = None) -> 
             )
             if resp.status_code == 200:
                 data = resp.json()
+                user_id = _external_task_user_id(data)
+                if not user_id:
+                    return None
                 return {
-                    "user_id": str(data.get("id") or data.get("user_id") or ""),
+                    "user_id": user_id,
                     "email": data.get("email") or "",
                     "name": data.get("name") or data.get("username") or "",
-                    # 外部 username 仅作姓名无法转拼音时的账号回退值。
+                    # 账号：以 external task system 的 username 为准，落库到平台 username 字段
                     "username": data.get("username") or "",
+                    "legacy_user_ids": _external_task_legacy_user_ids(data),
                 }
     except Exception:
         pass
 
-    # 券无效、过期或外部 SSO 不通时拒绝，不降级为 mock 用户。
+    # 券无效/过期或 external task system 不通：拒绝（返回 None → verify 接口 401）。
     # 不再降级为 mock 用户——否则任何 token 都能登录，等于绕过 SSO。
     return None
 
 
 # ── 用户查找/创建 ──────────────────────────────────────────────────────────────
 
+# 内置管理员：按姓名命中即固定为 admin（登录时生效，不会被降级）。
+BUILTIN_ADMIN_NAMES = {"张三"}
+
+
+def _is_builtin_admin(name: str | None, email: str | None = None) -> bool:
+    return bool(name and name.strip() in BUILTIN_ADMIN_NAMES)
+
+
 async def ensure_default_admin(db: AsyncSession) -> None:
-    """首次启动创建本地管理员；已有账号不会被覆盖。"""
+    """首次启动若不存在任何本地管理员，创建默认 admin，保证 external task system 不可用时也能登录。"""
     import logging
     from app.services.password import hash_password
-    if not settings.default_admin_password:
-        logging.getLogger(__name__).warning(
-            "未设置 DEFAULT_ADMIN_PASSWORD，跳过默认管理员创建。"
-        )
-        return
     existing = (await db.execute(
         select(PlatformUser).where(PlatformUser.username == settings.default_admin_username)
     )).scalar_one_or_none()
@@ -169,8 +199,8 @@ async def _pick_username(db: AsyncSession, desired: str, self_id: str | None) ->
 async def _account_from_name(
     db: AsyncSession, name: str, fallback: str, self_id: str | None,
 ) -> str | None:
-    """账号 = 姓名拼音；拼音取不到则回退外部 SSO username。
-    重名拼音冲突时追加序号，本人已占用则保持不变。"""
+    """账号 = 姓名拼音(如 张三→zhangsan)；拼音取不到则回退 external task system username。
+    重名拼音冲突时追加序号(zhangsan2…)，本人已占用则保持不变。"""
     from app.services.pinyin_util import name_to_pinyin
 
     base = name_to_pinyin(name) or (fallback or "").strip()
@@ -186,6 +216,53 @@ async def _account_from_name(
             return cand
         i += 1
         cand = f"{base}{i}"
+
+
+def _legacy_sso_match_keys(name: str, username: str, email: str) -> list[tuple[str, str]]:
+    """历史用户缺外部 id 时的补偿匹配键，按更可靠的账号/邮箱优先。"""
+    from app.services.pinyin_util import name_to_pinyin
+
+    keys: list[tuple[str, str]] = []
+    for field, value in (
+        ("username", (username or "").strip()),
+        ("username", name_to_pinyin(name) or ""),
+        ("email", (email or "").strip()),
+    ):
+        if value and (field, value) not in keys:
+            keys.append((field, value))
+    return keys
+
+
+async def _find_legacy_sso_user(
+    db: AsyncSession, *, email: str, name: str, username: str,
+) -> PlatformUser | None:
+    """找历史上没有 external_task_user_id 的同一人账号，用于登录时回填 subkey。
+
+    只匹配 external id 为空的记录，不抢占已经绑定过其它 SSO 身份的账号。
+    """
+    for field, value in _legacy_sso_match_keys(name, username, email):
+        col = getattr(PlatformUser, field)
+        rows = (await db.execute(
+            select(PlatformUser).where(
+                PlatformUser.external_task_user_id.is_(None),
+                col == value,
+            )
+        )).scalars().all()
+        if len(rows) == 1:
+            return rows[0]
+
+    # 姓名可能重名，只有唯一命中时才兜底。
+    clean_name = (name or "").strip()
+    if clean_name:
+        rows = (await db.execute(
+            select(PlatformUser).where(
+                PlatformUser.external_task_user_id.is_(None),
+                PlatformUser.name == clean_name,
+            )
+        )).scalars().all()
+        if len(rows) == 1:
+            return rows[0]
+    return None
 
 
 async def _maybe_assign_ai_key(db: AsyncSession, user: PlatformUser) -> None:
@@ -212,22 +289,33 @@ async def _maybe_assign_ai_key(db: AsyncSession, user: PlatformUser) -> None:
 
 
 async def get_or_create_platform_user(
-    db: AsyncSession, external_user_id: str, email: str, name: str, username: str = "",
+    db: AsyncSession, external_task_user_id: str, email: str, name: str, username: str = "",
+    legacy_user_ids: list[str] | None = None,
 ) -> PlatformUser:
     """查找平台用户，不存在则自动创建（默认 role=user）。
 
-    姓名(name)以外部 SSO 的 name 为准；账号(username)统一取姓名拼音，
-    而非外部系统工号，重名拼音追加序号。
+    姓名(name)以 external task system 的 name 为准；账号(username)统一取姓名拼音(如 zhangsan)，
+    而非 external task system 工号，重名拼音追加序号。
     """
     result = await db.execute(
-        select(PlatformUser).where(PlatformUser.external_user_id == external_user_id)
+        select(PlatformUser).where(PlatformUser.external_task_user_id == external_task_user_id)
     )
     user = result.scalar_one_or_none()
+    if user is None and legacy_user_ids:
+        user = (await db.execute(
+            select(PlatformUser).where(PlatformUser.external_task_user_id.in_(legacy_user_ids))
+        )).scalar_one_or_none()
+        if user is not None:
+            user.external_task_user_id = external_task_user_id
+    if user is None and external_task_user_id:
+        user = await _find_legacy_sso_user(db, email=email, name=name, username=username)
+        if user is not None:
+            user.external_task_user_id = external_task_user_id
     if user:
-        # 更新姓名/邮箱/账号（以外部 SSO 为准；账号唯一冲突时保持原值）
+        # 更新姓名/邮箱/账号（以 external task system 为准；账号唯一冲突时保持原值）
         user.email = email or user.email
         user.name = name or user.name
-        # 账号统一为姓名拼音，而非外部系统工号
+        # 账号统一为姓名拼音(zhangsan)，而非 external task system 工号
         acct = await _account_from_name(db, user.name, username, user.id)
         if acct:
             user.username = acct
@@ -237,14 +325,14 @@ async def get_or_create_platform_user(
         await db.refresh(user)
         return user
 
-    # 外部 SSO 首次登录一律创建为普通用户，管理员需在用户管理中显式授权。
+    # 初次登录(创建账号)才自动定角色：内置管理员名单→admin，其余默认普通用户
     user = PlatformUser(
         id=str(uuid.uuid4()),
-        external_user_id=external_user_id,
+        external_task_user_id=external_task_user_id,
         email=email,
         name=name,
         username=await _account_from_name(db, name, username, None),
-        role="user",
+        role="admin" if _is_builtin_admin(name, email) else "user",
     )
     await _maybe_assign_ai_key(db, user)
     db.add(user)

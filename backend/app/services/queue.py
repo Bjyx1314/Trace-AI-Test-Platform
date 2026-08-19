@@ -30,21 +30,23 @@ def get_queue() -> Queue:
 def run_execution_job(execution_id: str, case_ids: list[str], run_mode: str = "fresh",
                       account_overrides: dict | None = None, reorder: bool = False,
                       ai_key: str | None = None, target_device: str | None = None,
-                      env: str | None = None, package_overrides: dict | None = None):
+                      env: str | None = None, package_overrides: dict | None = None,
+                      app_login: dict | None = None):
     """RQ worker 实际执行的同步 job：在 worker 进程内跑整批真实执行。"""
     from app.services.execution_runner import run_execution
-    asyncio.run(run_execution(execution_id, case_ids, run_mode, account_overrides, reorder, ai_key, target_device, env, package_overrides))
+    asyncio.run(run_execution(execution_id, case_ids, run_mode, account_overrides, reorder, ai_key, target_device, env, package_overrides, app_login))
 
 
 def enqueue_execution(execution_id: str, case_ids: list[str], run_mode: str = "fresh",
                       account_overrides: dict | None = None, reorder: bool = False,
                       ai_key: str | None = None, target_device: str | None = None,
-                      env: str | None = None, package_overrides: dict | None = None):
-    """把一次整批执行入队，返回 RQ job。ai_key=发起人 key；target_device=App 指定真机；env=PC 执行环境；package_overrides=App换包。"""
+                      env: str | None = None, package_overrides: dict | None = None,
+                      app_login: dict | None = None):
+    """把一次整批执行入队，返回 RQ job。ai_key=发起人 key；target_device=App 指定真机；env=PC 执行环境；package_overrides=App换包；app_login=App自动登录。"""
     q = get_queue()
     return q.enqueue(
         run_execution_job,
-        execution_id, case_ids, run_mode, account_overrides, reorder, ai_key, target_device, env, package_overrides,
+        execution_id, case_ids, run_mode, account_overrides, reorder, ai_key, target_device, env, package_overrides, app_login,
         job_timeout=3600,
         result_ttl=86400,
     )

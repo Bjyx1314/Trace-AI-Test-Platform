@@ -13,7 +13,7 @@ done
 echo "[entrypoint] 灌入枚举数据(幂等)..."
 python -m app.seed_enums || echo "[entrypoint] seed_enums 失败(忽略，可后续手动跑)"
 
-echo "[entrypoint] 确保存在示例项目(无项目时自动建，幂等)..."
+echo "[entrypoint] 确保存在默认项目(无项目时自动建，幂等)..."
 python -m app.seed_default_project || echo "[entrypoint] seed_default_project 失败(忽略)"
 
 # 注意：不在此安装框架自身 requirements —— 框架会钉 urllib3/requests 等版本，

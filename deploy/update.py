@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+﻿#!/usr/bin/env python
 """一键更新部署：本地打包平台代码 → 上传服务器 → docker 重建容器。
 
 用法:
@@ -7,6 +7,8 @@
 
 特点:
 - 只更新平台代码(backend/frontend/compose)，【不动】服务器上的 backend/.env(打包时已排除)
+- 顺带 git pull 三个框架仓库(/opt/framework、/opt/framework-inter，凭据已在 .git/config，免输密码)
+  首次初始化框架请先跑 deploy/setup_frameworks.py
 - docker 层缓存：requirements 不变时不会重下 chromium，代码更新很快
 可用环境变量覆盖：DEPLOY_HOST / DEPLOY_PORT / DEPLOY_USER / DEPLOY_PWD
 """
@@ -23,11 +25,11 @@ except ImportError:
     print("缺少 paramiko，请先安装:  pip install paramiko")
     sys.exit(1)
 
-HOST = os.environ.get("DEPLOY_HOST")
-PORT = int(os.environ.get("DEPLOY_PORT", "22"))
-USER = os.environ.get("DEPLOY_USER", "deploy")
-PWD = os.environ.get("DEPLOY_PWD")
-REMOTE_DIR = os.environ.get("DEPLOY_REMOTE_DIR", "/opt/ai-test-platform")
+HOST = os.environ.get("DEPLOY_HOST", "127.0.0.1")
+PORT = int(os.environ.get("DEPLOY_PORT", "222"))
+USER = os.environ.get("DEPLOY_USER", "root")
+PWD = os.environ.get("DEPLOY_PWD") or getpass.getpass(f"{USER}@{HOST} 服务器密码: ")
+REMOTE_DIR = "/opt/test-platform"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 INCLUDE = ["backend", "frontend", "docker-compose.prod.yml"]
@@ -46,10 +48,6 @@ def _filter(ti: tarfile.TarInfo):
 
 
 def main():
-    if not HOST:
-        print("请先设置 DEPLOY_HOST；可选设置 DEPLOY_PORT/DEPLOY_USER/DEPLOY_REMOTE_DIR。")
-        sys.exit(2)
-    password = PWD or getpass.getpass(f"{USER}@{HOST} 服务器密码: ")
     print("[1/4] 打包平台代码(排除 node_modules/.env 等)...")
     buf = io.BytesIO()
     with tarfile.open(fileobj=buf, mode="w:gz") as tar:
@@ -61,7 +59,7 @@ def main():
     print(f"[2/4] 连接 {USER}@{HOST}:{PORT} 并上传...")
     cli = paramiko.SSHClient()
     cli.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-    cli.connect(HOST, port=PORT, username=USER, password=password, timeout=20)
+    cli.connect(HOST, port=PORT, username=USER, password=PWD, timeout=20)
     sftp = cli.open_sftp()
     with sftp.open("/tmp/platform_update.tgz", "wb") as rf:
         rf.write(data)
@@ -70,6 +68,10 @@ def main():
         f"cd {REMOTE_DIR}\n"
         "echo '[3/4] 解包(保留 backend/.env)...'\n"
         f"tar -xzf /tmp/platform_update.tgz -C {REMOTE_DIR}\n"
+        "echo '[3.5/4] 更新框架仓库(git pull，非 git 仓库则跳过)...'\n"
+        "for fr in /opt/framework /opt/framework-inter; do "
+        "if [ -d \"$fr/.git\" ]; then echo \"  pull $fr\"; (cd \"$fr\" && git pull --ff-only 2>&1 | tail -1) || true; "
+        "else echo \"  跳过 $fr(非 git，先跑 setup_frameworks.py)\"; fi; done\n"
         "echo '[4/4] 重建并启动(layer 缓存命中时很快)...'\n"
         "docker compose -f docker-compose.prod.yml up -d --build\n"
         "sleep 5\n"

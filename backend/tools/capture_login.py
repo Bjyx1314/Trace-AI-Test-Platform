@@ -1,6 +1,7 @@
-"""抓取 PC 端登录态(Playwright storageState)——账号变更时重跑即可。
+﻿"""抓取 PC 端登录态(Playwright storageState)——账号变更时重跑即可。
 
 用法(在 backend 目录):
+    python -m tools.capture_login demo-web
     python -m tools.capture_login web-admin
 
 流程：
@@ -67,6 +68,6 @@ async def main(platform: str) -> None:
 
 if __name__ == "__main__":
     if len(sys.argv) < 2:
-        print("用法：python -m tools.capture_login <端名>   例如：python -m tools.capture_login web-admin")
+        print("用法：python -m tools.capture_login <端名>   例如：python -m tools.capture_login demo-web")
         sys.exit(1)
     asyncio.run(main(sys.argv[1]))

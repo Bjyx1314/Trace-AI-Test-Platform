@@ -6,17 +6,15 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from app.services.runners.factory import build_runner, _UnavailableRunner  # noqa: E402
+from app.services.runners.factory import build_runner  # noqa: E402
 from app.services.runners.api_runner import ApiRunner  # noqa: E402
 from app.services.runners.mock_runner import MockRunner  # noqa: E402
-from app.services.runners.worker_dispatch_runner import WorkerDispatchRunner  # noqa: E402
 
 
 class _Cfg:
     """配置替身，仅暴露工厂关心的开关字段。"""
     def __init__(self, mode="real", **flags):
         self.execution_mode = mode
-        self.mock_allowed = flags.get("mock_allowed", False)
         self.runner_api_enabled = flags.get("api", True)
         self.runner_web_enabled = flags.get("web", False)
         self.runner_android_enabled = flags.get("android", False)
@@ -32,13 +30,8 @@ class _Case:
 
 
 def test_mock_mode_always_returns_mock():
-    r = build_runner(_Case(case_type="api"), cfg=_Cfg(mode="mock", mock_allowed=True))
-    assert isinstance(r, MockRunner)
-
-
-def test_mock_mode_is_error_when_mock_is_forbidden():
     r = build_runner(_Case(case_type="api"), cfg=_Cfg(mode="mock"))
-    assert isinstance(r, _UnavailableRunner)
+    assert isinstance(r, MockRunner)
 
 
 def test_real_api_enabled_returns_api_runner():
@@ -46,11 +39,13 @@ def test_real_api_enabled_returns_api_runner():
     assert isinstance(r, ApiRunner)
 
 
-def test_real_but_runner_disabled_is_unavailable_in_strict_mode():
+def test_real_but_runner_disabled_falls_back_to_mock():
+    # 路由到 web 但 web 未开 → 回退 Mock（激进路线：未就绪不阻塞平台）
     r = build_runner(_Case(platforms=["web"]), cfg=_Cfg(mode="real", web=False))
-    assert isinstance(r, _UnavailableRunner)
+    assert isinstance(r, MockRunner)
 
 
-def test_real_android_enabled_returns_worker_dispatch():
+def test_real_android_enabled_but_not_implemented_falls_back_to_mock():
+    # android 已开但 AppRunner 尚未实现 → 回退 Mock（占位，后续阶段点亮）
     r = build_runner(_Case(platforms=["android"]), cfg=_Cfg(mode="real", android=True))
-    assert isinstance(r, WorkerDispatchRunner)
+    assert isinstance(r, MockRunner)

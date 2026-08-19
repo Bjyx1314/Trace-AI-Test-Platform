@@ -1,4 +1,4 @@
-import api from './client'
+﻿import api from './client'
 import type {
   Project,
   Requirement,
@@ -16,11 +16,21 @@ import type {
   RequirementsQualityResponse,
   RequirementsGateResponse,
   PipelineStatus,
+  CoveredItem,
+  ChangeImpactRecord,
+  BusinessRepo,
+  CoverageMatrixResponse,
+  Experience,
+  ExperienceRecallResponse,
+  GraphNode,
+  GraphExpandResponse,
 } from '../types/api'
 
 // ─── Projects ────────────────────────────────────────────────────────────────
 type ProjectCreateInput = Pick<Project, 'name'> &
-  Partial<Pick<Project, 'description' | 'product_line' | 'case_id_prefix' | 'feishu_webhook' | 'feishu_doc_url' | 'ci_gate_enabled' | 'pass_rate_threshold'>>
+  Partial<Pick<Project, 'description' | 'product_line' | 'case_id_prefix' | 'feishu_webhook' | 'feishu_doc_url' |
+    'feishu_project_space_id' | 'feishu_project_rootcause_field' | 'feishu_project_defect_filter' |
+    'ci_gate_enabled' | 'pass_rate_threshold'>>
 
 export const projectsApi = {
   list: () => api.get<Project[]>('/projects'),
@@ -72,10 +82,10 @@ export const requirementsApi = {
   },
   syncFeishu: (projectId: string) =>
     api.post<Requirement[]>('/requirements/sync-feishu', null, { params: { project_id: projectId } }),
-  externalProjects: () =>
-    api.get<{ id: string; name: string; status?: string }[]>('/requirements/external-system/projects'),
-  syncExternal: (projectId: string, externalProjectId?: string) =>
-    api.post<Requirement[]>('/requirements/sync-external', null, { params: { project_id: projectId, external_project_id: externalProjectId } }),
+  agentBoardProjects: () =>
+    api.get<{ id: string; name: string; status?: string }[]>('/requirements/external task system/projects'),
+  syncExternalTasks: (projectId: string, abProjectId?: string) =>
+    api.post<Requirement[]>('/requirements/sync-external task system', null, { params: { project_id: projectId, ab_project_id: abProjectId } }),
 }
 
 // ─── Test Cases ───────────────────────────────────────────────────────────────
@@ -86,8 +96,11 @@ export const testCasesApi = {
   list: (params?: { project_id?: string; requirement_id?: string; priority?: string; library_only?: boolean }) =>
     api.get<TestCase[]>('/testcases', { params }),
   get: (id: string) => api.get<TestCase>(`/testcases/${id}`),
-  create: (data: TestCaseCreateInput) => api.post<TestCase>('/testcases', data),
+  // 新增用例后端会同步自动生成步骤锚点(AI)，可能耗时数秒，关闭超时
+  create: (data: TestCaseCreateInput) => api.post<TestCase>('/testcases', data, { timeout: 0 }),
   update: (id: string, data: Partial<TestCaseCreateInput>) => api.put<TestCase>(`/testcases/${id}`, data),
+  regenCheckpoints: (data: { title?: string; steps: Array<{ action?: string; expected?: string; check_points?: string[] }> }) =>
+    api.post<{ steps: Array<{ action?: string; expected?: string; check_points?: string[] }> }>('/testcases/regen-checkpoints', data, { timeout: 0 }),
   delete: (id: string) => api.delete<void>(`/testcases/${id}`),
   trash: (params?: { project_id?: string }) =>
     api.get<TestCase[]>('/testcases/trash', { params }),
@@ -132,6 +145,8 @@ type ExecutionCreateInput = {
   target_device?: string | null   // App 指定真机 serial；不传走兜底默认设备
   env?: string                     // PC/Web 执行环境 sit(默认)/dev；缺该环境地址的端回退 SIT
   package_overrides?: Record<string, string>  // App 换测试包：{app端名: 包版本id}；执行前卸旧装新
+  // App 自动登录：{app端key: {env(选环境名), account(手机号), code(验证码,默认SIT码), tenant(期望租户,Android App), label(端名)}}
+  app_login?: Record<string, { env?: string; account?: string; code?: string; tenant?: string; label?: string }>
 }
 
 export type RequirementExecutionOverview = {
@@ -160,18 +175,80 @@ export const executionsApi = {
   requirementOverview: (projectId?: string) =>
     api.get<RequirementExecutionOverview[]>('/executions/requirement-overview', { params: { project_id: projectId } }),
   get: (id: string) => api.get<Execution>(`/executions/${id}`),
+  // 进行中执行（服务端口径，供任意查看者看到「正在执行的用例」）
+  active: (requirementId?: string, projectId?: string) =>
+    api.get<{ id: string; status: string; case_ids: string[]; name: string }[]>(
+      '/executions/active', { params: { requirement_id: requirementId, project_id: projectId } }),
   devices: () => api.get<{ adb_available: boolean; devices: { serial: string; model: string; status?: string; worker_name?: string; is_shared?: boolean; is_public?: boolean; busy?: boolean; owner_user_id?: string | null }[]; sonic_devices?: { serial: string; model: string; busy?: boolean; occupied_by?: string | null }[]; sonic_enabled?: boolean; sonic_error?: string | null; app_queue?: number; error: string | null }>('/executions/devices'),
   webAccounts: (platforms: string[]) =>
     api.get<Record<string, { covered: boolean; accounts: { role: string; label: string }[] }>>(
       '/executions/web-accounts', { params: { platforms: platforms.join(',') } }),
+  // 各 App 端是否需要选/切租户（执行弹框据此决定是否显示「期望租户」框）
+  appTenantSupport: (apps: string[]) =>
+    api.get<Record<string, boolean>>('/executions/app-tenant-support', { params: { apps: apps.join(',') } }),
   create: (data: ExecutionCreateInput) => api.post<Execution>('/executions', data),
-  // App「更换测试包」下拉数据源：某 app 端可选的包版本（真实接口待接入，后端现返回内置测试项）
+  // App「更换测试包」下拉数据源：某 app 端可选的包版本（后端查 Jenkins 构建记录，按「<端名>」匹配）
   appPackages: (app: string) =>
     api.get<{ app: string; packages: { id: string; label: string; version?: string }[] }>(
       '/executions/app-packages', { params: { app } }),
   results: (id: string) => api.get<TestResult[]>(`/executions/${id}/results`),
+  // 执行实时日志（轮询增量拉取，after=上次最大 seq）；给 caseId 则只看该用例的日志(批量执行时)
+  logs: (id: string, after = 0, caseId?: string) =>
+    api.get<{ status: string; logs: { seq: number; ts: number; text: string; level: string; case_id?: string | null }[] }>(
+      `/executions/${id}/logs`, { params: { after, case_id: caseId } }),
+  cancel: (id: string) => api.post<{ ok: boolean; status: string; message?: string }>(`/executions/${id}/cancel`),
+  cancelCase: (id: string, caseId: string) =>
+    api.post<{ ok: boolean; status: string; message?: string }>(`/executions/${id}/cancel-case/${caseId}`),
   updateDefect: (resultId: string, defect_status: string) =>
     api.patch<TestResult>(`/executions/results/${resultId}/defect`, { defect_status }),
+}
+
+// ─── 常用项（按用户隔离，PC/App 通用）：kind=phone 常用号码 / tenant 常用租户 ──────
+export const favPhonesApi = {
+  list: (kind: 'phone' | 'tenant' = 'phone') =>
+    api.get<{ id: string; phone: string }[]>('/fav-phones', { params: { kind } }),
+  add: (phone: string, kind: 'phone' | 'tenant' = 'phone') =>
+    api.post<{ id: string; phone: string }>('/fav-phones', { phone, kind }),
+  remove: (id: string) => api.delete(`/fav-phones/${id}`),
+}
+
+// ─── 用例数据要求（测试数据准备 MVP-0：人工填 manual_values）────────────────
+export interface DataRequirement {
+  id?: string
+  case_id: string
+  alias: string
+  data_type?: string | null
+  target_state?: Record<string, any> | null
+  constraints?: Record<string, any> | null
+  strategy?: string
+  manual_values?: Record<string, any> | null
+  scenario_id?: string | null
+  scenario_version?: string | null
+  output_key?: string | null
+  required?: boolean
+  review_status?: string
+}
+export const dataRequirementsApi = {
+  list: (caseId: string) =>
+    api.get<{ requirements: DataRequirement[]; referenced_placeholders: string[] }>(
+      '/data-requirements', { params: { case_id: caseId } }),
+  upsert: (body: DataRequirement) => api.post<DataRequirement>('/data-requirements', body),
+  remove: (id: string) => api.delete(`/data-requirements/${id}`),
+}
+
+// ─── 数据编排注册表（能力/场景/Schema）——MVP-1 管理台 ─────────────────────
+export const dataRegistriesApi = {
+  listCapabilities: () => api.get<any[]>('/data-capabilities'),
+  upsertCapability: (body: any) => api.post<any>('/data-capabilities', body),
+  activateCapability: (id: string) => api.post<any>(`/data-capabilities/${id}/activate`),
+  disableCapability: (id: string) => api.post<any>(`/data-capabilities/${id}/disable`),
+  removeCapability: (id: string) => api.delete(`/data-capabilities/${id}`),
+  listScenarios: () => api.get<any[]>('/data-scenarios'),
+  upsertScenario: (body: any) => api.post<any>('/data-scenarios', body),
+  publishScenario: (id: string) => api.post<any>(`/data-scenarios/${id}/publish`),
+  removeScenario: (id: string) => api.delete(`/data-scenarios/${id}`),
+  listSchemas: () => api.get<any[]>('/data-object-schemas'),
+  upsertSchema: (body: any) => api.post<any>('/data-object-schemas', body),
 }
 
 // ─── App 真机执行机 worker（连接我的真机）──────────────────────────────────
@@ -182,10 +259,10 @@ export const workerApi = {
 
 // ─── Pipeline ─────────────────────────────────────────────────────────────────
 export const pipelineApi = {
-  analyze: (requirement_id: string, scope_text?: string, scope_image_tokens?: string[], slice_id?: string, mode?: string) =>
-    api.post<PipelineStatus>('/pipeline/analyze', { requirement_id, scope_text, scope_image_tokens, slice_id, mode }),
-  generateCases: (requirement_id: string, regenerate = false, scope_text?: string, scope_image_tokens?: string[], slice_id?: string, mode?: string) =>
-    api.post<PipelineStatus>('/pipeline/generate-cases', { requirement_id, regenerate, scope_text, scope_image_tokens, slice_id, mode }),
+  analyze: (requirement_id: string, scope_text?: string, scope_image_tokens?: string[], slice_id?: string, mode?: string, supplement?: string) =>
+    api.post<PipelineStatus>('/pipeline/analyze', { requirement_id, scope_text, scope_image_tokens, slice_id, mode, supplement }),
+  generateCases: (requirement_id: string, regenerate = false, scope_text?: string, scope_image_tokens?: string[], slice_id?: string, mode?: string, supplement?: string) =>
+    api.post<PipelineStatus>('/pipeline/generate-cases', { requirement_id, regenerate, scope_text, scope_image_tokens, slice_id, mode, supplement }),
   status: (requirementId: string, sliceId?: string) =>
     api.get<PipelineStatus>(`/pipeline/status/${requirementId}`, { params: sliceId ? { slice_id: sliceId } : undefined }),
   confirmPlatforms: (requirement_id: string, platforms: string[], slice_id?: string) =>
@@ -226,7 +303,7 @@ export const dashboardApi = {
     api.get<GateResult>('/dashboard/quality-gate', { params: { project_id: projectId } }),
   breakdown: (projectId?: string) =>
     api.get<DashboardBreakdown>('/dashboard/breakdown', { params: { project_id: projectId } }),
-  requirementsQuality: (params?: { project_id?: string; iteration?: string; status?: string; platform?: string; owner?: string }) =>
+  requirementsQuality: (params?: { project_id?: string; iteration?: string; status?: string; platform?: string; owner?: string; mine?: boolean }) =>
     api.get<RequirementsQualityResponse>('/dashboard/requirements-quality', { params }),
   requirementsGate: (requirement_ids: string[]) =>
     api.post<RequirementsGateResponse>('/dashboard/requirements-gate', { requirement_ids }),
@@ -275,6 +352,18 @@ type RecordResult = {
   entries: PageStructureCache[]
 }
 
+export type RecordSession = {
+  session_id: string
+  base_url: string
+  start_path: string | null
+  status: 'recording' | 'parsed' | 'done' | 'error'
+  error: string | null
+  created_count: number
+  updated_count: number
+  existing_paths: { url_pattern: string; page_name: string }[]
+  page_count: number
+}
+
 export const pageCacheApi = {
   list: (projectId?: string) =>
     api.get<PageStructureCache[]>('/page-cache', { params: { project_id: projectId } }),
@@ -288,6 +377,15 @@ export const pageCacheApi = {
   explore: (data: PageExploreInput) => api.post<ExploreResult>('/page-cache/explore', data, { timeout: 0 }),
   recorderStatus: () => api.get<{ available: boolean; cli_path: string | null }>('/page-cache/recorder/status'),
   record: (data: PageRecordInput) => api.post<RecordResult>('/page-cache/record', data, { timeout: 0 }),
+  // 会话式录制（多窗口）：start 非阻塞开窗；sessions 轮询状态并自动入库；commit 覆盖已存在；close 关闭会话
+  recordStart: (data: { project_id: string; base_url: string; start_path?: string }) =>
+    api.post<{ session: RecordSession; reused: boolean }>('/page-cache/record/start', data),
+  recordSessions: (projectId: string) =>
+    api.get<{ sessions: RecordSession[] }>('/page-cache/record/sessions', { params: { project_id: projectId } }),
+  recordCommit: (session_id: string, overwrite: boolean) =>
+    api.post<RecordResult>('/page-cache/record/commit', { session_id, overwrite }),
+  recordClose: (session_id: string) =>
+    api.post<{ ok: boolean }>('/page-cache/record/close', { session_id }),
 }
 
 // ─── Enums ────────────────────────────────────────────────────────────────────
@@ -318,6 +416,58 @@ export const defectsApi = {
   get: (id: string) => api.get<Defect>(`/defects/${id}`),
   update: (id: string, data: { status?: string; severity?: string; duplicate_of_defect_id?: string; title?: string; draft_ticket?: Record<string, any> }) =>
     api.patch<Defect>(`/defects/${id}`, data),
+  syncProduction: (projectId: string) =>
+    api.post<{ synced: number; sedimented: number; skipped: number; reason?: string }>('/defects/sync-production', null, { params: { project_id: projectId } }),
+}
+
+// ─── AI 质量闭环：经验库 ──────────────────────────────────────────────────────
+export const experiencesApi = {
+  recall: (params: { requirement_id?: string; impact_id?: string; top_n?: number }) =>
+    api.get<ExperienceRecallResponse>('/experiences/recall', { params }),
+  adopt: (id: string, data: { requirement_id?: string; reason?: string }) =>
+    api.post<{ status: string; confidence: number; exp_status: string }>(`/experiences/${id}/adopt`, data),
+  ignore: (id: string, data: { requirement_id?: string; reason?: string }) =>
+    api.post<{ status: string; confidence: number; exp_status: string }>(`/experiences/${id}/ignore`, data),
+  notApplicable: (id: string, data: { requirement_id?: string; reason: string }) =>
+    api.post<{ status: string; confidence: number; exp_status: string }>(`/experiences/${id}/not-applicable`, data),
+  list: (params?: { project_id?: string; status?: string; limit?: number }) =>
+    api.get<Experience[]>('/experiences', { params }),
+  update: (id: string, data: { status?: string; title?: string; reason?: string }) =>
+    api.patch<Experience>(`/experiences/${id}`, data),
+  runMerge: (project_id?: string) => api.post<{ merged: number }>('/experiences/maintenance/merge', null, { params: { project_id } }),
+}
+
+// ─── AI 质量闭环：代码事实图谱 ────────────────────────────────────────────────
+export const graphApi = {
+  scan: (payload: { trigger_mode: 'local_path' | 'repo_branch'; repo_label?: string; repo_path?: string; business_repo_id?: string; branch?: string; version?: string }) =>
+    api.post<{ status: string; version: string }>('/graph/scan', payload, { timeout: 0 }),
+  seedPages: (project_id?: string) => api.post<{ seeded: number }>('/graph/seed-pages', null, { params: { project_id } }),
+  nodes: (params?: { node_type?: string; repo?: string; q?: string; limit?: number }) =>
+    api.get<GraphNode[]>('/graph/nodes', { params }),
+  expand: (node: string, max_hops = 2) => api.get<GraphExpandResponse>('/graph/expand', { params: { node, max_hops } }),
+  stats: () => api.get<{ nodes: number; edges: number; by_type: Record<string, number> }>('/graph/stats'),
+}
+
+// ─── AI 质量闭环：硬规则编辑 + 发布报告 + 度量 ────────────────────────────────
+export type QualityRule = {
+  id: string; name: string; match_tags: string[]; min_priority?: string | null
+  required_covered_items?: string[] | null; source?: string | null; active: boolean; created_at?: string
+}
+export const qualityRulesApi = {
+  list: (active?: boolean) => api.get<QualityRule[]>('/quality-rules', { params: { active } }),
+  create: (data: Partial<QualityRule>) => api.post<QualityRule>('/quality-rules', data),
+  update: (id: string, data: Partial<QualityRule>) => api.put<QualityRule>(`/quality-rules/${id}`, data),
+  remove: (id: string) => api.delete<{ status: string }>(`/quality-rules/${id}`),
+}
+export const releaseApi = {
+  report: (reqId: string) => api.get<{ release_suggestion: 'pass' | 'warn' | 'block'; reasons: string[]; summary: Record<string, unknown>; entry_coverage_matrix?: unknown[] }>(`/requirements/${reqId}/release-report`, { timeout: 600000 }),
+}
+export const metricsApi = {
+  qualityLoop: (project_id?: string) => api.get<{
+    impact_accuracy: number; ai_case_modify_rate: number; experience_adopt_rate: number
+    case_reuse_rate: number; coverage_verify_rate: number
+    raw: Record<string, number>
+  }>('/metrics/quality-loop', { params: { project_id } }),
 }
 
 // ─── Framework Repos（框架仓库集成）────────────────────────────────────────────
@@ -376,8 +526,8 @@ export const authApi = {
   login: (username: string, password: string) =>
     api.post<{ jwt: string; user: any }>('/auth/login', { username, password }),
   me: () => api.get<any>('/auth/me'),
-  // 公开读取外部 SSO 地址，供未登录页面跳转换票。
-  ssoConfig: () => api.get<{ external_sso_url: string }>('/auth/sso-config'),
+  // 公开:拿 SSO 对接认证地址(external task system 地址),未登录跳转发券入口用。
+  ssoConfig: () => api.get<{ external_task_url: string }>('/auth/sso-config'),
 }
 
 // ─── Users ────────────────────────────────────────────────────────────────────
@@ -401,7 +551,7 @@ export type AutomationSwitch = {
   updated_at: string | null
 }
 
-export type SsoConfig = { external_sso_url: string; resolved: string; default: string }
+export type SsoConfig = { external_task_url: string; resolved: string; default: string }
 export type AiConfig = {
   provider: string; model: string; base_url: string
   api_key_set: boolean; api_key_masked: string
@@ -413,11 +563,23 @@ export const systemApi = {
   setAutomationSwitch: (platform: string, enabled: boolean) =>
     api.put<AutomationSwitch>('/system/automation-switches', { platform, enabled }),
   getSsoConfig: () => api.get<SsoConfig>('/system/sso-config'),
-  setSsoConfig: (external_sso_url: string) =>
-    api.put<SsoConfig>('/system/sso-config', { external_sso_url }),
+  setSsoConfig: (external_task_url: string) =>
+    api.put<SsoConfig>('/system/sso-config', { external_task_url }),
   getAiConfig: () => api.get<AiConfig>('/system/ai-config'),
   setAiConfig: (data: { provider: string; model: string; base_url: string; api_key?: string }) =>
     api.put<AiConfig>('/system/ai-config', data),
+  getGuardianConfig: () => api.get<GuardianConfig>('/system/guardian-config'),
+  setGuardianConfig: (data: { enabled: boolean; base_url: string; pat?: string }) =>
+    api.put<GuardianConfig>('/system/guardian-config', data),
+  pingGuardian: () => api.post<{ ok: boolean; detail: unknown }>('/system/guardian-ping'),
+}
+
+export type GuardianConfig = {
+  enabled: boolean
+  base_url: string
+  pat_set: boolean
+  pat_masked: string
+  product: string
 }
 
 // ─── Quality Gate Config ──────────────────────────────────────────────────────
@@ -430,4 +592,82 @@ export const qualityGateConfigApi = {
   get: (projectId: string) => api.get<QualityGateConfig>(`/projects/${projectId}/quality-gate-config`),
   update: (projectId: string, data: QualityGateConfigUpdateInput) =>
     api.put<QualityGateConfig>(`/projects/${projectId}/quality-gate-config`, data),
+}
+
+// ─── AI 质量闭环：覆盖项 Review（挂 testcase 子资源）───────────────────────────
+export const coveredItemsApi = {
+  add: (caseId: string, item: Partial<CoveredItem> & { source?: string; reason?: string }) =>
+    api.post<{ status: string; covered_items: CoveredItem[] }>(`/testcases/${caseId}/covered-items`, item),
+  update: (caseId: string, itemId: string, patch: Partial<CoveredItem> & { reason?: string }) =>
+    api.patch<{ status: string; covered_items: CoveredItem[] }>(`/testcases/${caseId}/covered-items/${itemId}`, patch),
+  remove: (caseId: string, itemId: string, reason?: string) =>
+    api.delete<{ status: string; covered_items: CoveredItem[] }>(`/testcases/${caseId}/covered-items/${itemId}`, { data: { reason } }),
+  backfill: (params: { project_id?: string; limit?: number; only_in_library?: boolean }) =>
+    api.post<{ scanned: number; filled: number; failed: number }>('/testcases/backfill-covered-items', null, { params }),
+  backfillPending: (projectId?: string) =>
+    api.get<{ pending: number }>('/testcases/backfill-covered-items/pending', { params: { project_id: projectId } }),
+}
+
+// ─── AI 质量闭环：代码影响分析（手动触发）─────────────────────────────────────
+export const codeImpactApi = {
+  trigger: (payload: {
+    trigger_mode: 'paste_diff' | 'local_path' | 'repo_branch'
+    requirement_id?: string
+    diff_text?: string
+    repo_label?: string
+    repo_path?: string
+    business_repo_id?: string
+    base_branch?: string
+    target_branch?: string
+    commit_id?: string
+    mr_id?: string
+  }) => api.post<ChangeImpactRecord>('/code-impact/analyze', payload, { timeout: 0 }),
+  get: (impactId: string) => api.get<ChangeImpactRecord>(`/code-impact/${impactId}`),
+  listByRequirement: (requirementId?: string, limit = 50) =>
+    api.get<ChangeImpactRecord[]>('/code-impact', { params: { requirement_id: requirementId, limit } }),
+  reportUrl: (impactId: string) => `/api/code-impact/${impactId}/report.md`,
+}
+
+// ─── 被测业务仓库登记（代码变更分析「下拉选仓库」数据源）─────────────────────────
+export const businessRepoApi = {
+  list: (projectId?: string) =>
+    api.get<BusinessRepo[]>('/business-repos', { params: projectId ? { project_id: projectId } : undefined }),
+  create: (payload: { name: string; git_url: string; default_branch?: string; token?: string; project_id?: string }) =>
+    api.post<BusinessRepo>('/business-repos', payload),
+  remove: (id: string) => api.delete(`/business-repos/${id}`),
+}
+
+// ─── App 自动登录配方（配置驱动，无需改代码就把各 App 登录放进平台）─────────────
+export type AppLoginRecipe = {
+  id: string
+  name: string
+  match_keywords: string
+  env_steps?: string | null
+  restart_after_env: boolean
+  needs_tenant: boolean
+  enabled: boolean
+  created_at?: string
+  updated_at?: string
+}
+export type AppLoginRecipeInput = {
+  name: string
+  match_keywords: string
+  env_steps?: string | null
+  restart_after_env: boolean
+  needs_tenant: boolean
+  enabled: boolean
+}
+export const appLoginRecipesApi = {
+  list: () => api.get<AppLoginRecipe[]>('/app-login-recipes'),
+  create: (payload: AppLoginRecipeInput) => api.post<AppLoginRecipe>('/app-login-recipes', payload),
+  update: (id: string, payload: AppLoginRecipeInput) => api.put<AppLoginRecipe>(`/app-login-recipes/${id}`, payload),
+  remove: (id: string) => api.delete(`/app-login-recipes/${id}`),
+}
+
+// ─── AI 质量闭环：覆盖矩阵 ────────────────────────────────────────────────────
+export const coverageMatrixApi = {
+  byRequirement: (reqId: string) =>
+    api.get<CoverageMatrixResponse>(`/requirements/${reqId}/coverage-matrix`, { timeout: 600000 }),
+  byExecution: (execId: string) =>
+    api.get<{ execution_id: string; checked_points: unknown[]; summary: { total: number; passed: number; verify_rate: number } }>(`/executions/${execId}/coverage`),
 }

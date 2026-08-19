@@ -17,6 +17,7 @@ import logging
 import os
 import subprocess
 import tempfile
+import time
 import zipfile
 from pathlib import Path
 
@@ -165,8 +166,13 @@ def _axml_manifest_package(data: bytes) -> str | None:
     return None
 
 
-def install_apk(serial: str | None, source: str, package: str | None = None) -> tuple[bool, str]:
+def install_apk(serial: str | None, source: str, package: str | None = None,
+                ui_device=None, timeout: int = 180) -> tuple[bool, str]:
     """在设备(serial)上换包：先卸旧包(package)，再装 source 指向的新 apk。
+
+    ui_device: 已连接的 uiautomator2 设备对象(可选)。部分 OEM 机型(华为/荣耀等)的 pm install
+    不会静默安装，而是弹图形「安装确认框」(com.android.packageinstaller)并阻塞——远程无人值守
+    会一直卡死。传入 ui_device 时，后台跑安装并自动点掉确认框；不传则退化为带短超时快速失败。
 
     返回 (成功?, 说明)。source 解析失败/安装失败返回 (False, 原因)。
     """
@@ -184,11 +190,96 @@ def install_apk(serial: str | None, source: str, package: str | None = None) -> 
     else:
         logger.info("未知 apk 包名，跳过卸载，直接覆盖安装(-r)")
 
-    try:
-        cp = _run_adb(serial, ["install", "-r", "-t", local], timeout=600)
-    except Exception as e:
-        return False, f"adb install 异常：{e}"
-    out = f"{cp.stdout or ''}\n{cp.stderr or ''}"
-    if "Success" in out:
+    ok, out = _adb_install(serial, local, ui_device, timeout)
+    if ok:
         return True, f"已安装新包{('（' + pkg + '）') if pkg else ''}"
-    return False, f"安装失败：{out.strip()[:300]}"
+    return False, f"安装失败：{out}"
+
+
+# OEM 安装确认框的按钮文案(华为可能两步：先「安装」，再二次风险提示「继续安装/仍要安装」)
+_INSTALL_CONFIRM_LABELS = (
+    "继续安装", "仍要安装", "仍然安装", "无视风险安装", "安装", "确定", "允许", "下一步", "INSTALL", "Install",
+)
+
+
+def _adb_install(serial: str | None, apk_path: str, ui_device=None, timeout: int = 180) -> tuple[bool, str]:
+    """执行 adb install。有 ui_device 时后台安装 + 前台自动点掉 OEM 安装确认框；
+    无 ui_device 时普通安装，但用短超时兜底——装不上立即失败并给可操作提示，不再假死几分钟。"""
+    if ui_device is None:
+        try:
+            cp = _run_adb(serial, ["install", "-r", "-t", apk_path], timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return False, _BLOCKED_HINT
+        except Exception as e:
+            return False, f"adb install 异常：{e}"
+        out = f"{cp.stdout or ''}\n{cp.stderr or ''}"
+        return ("Success" in out), (out.strip()[:300] or "无输出")
+
+    # 有 u2 设备：后台跑安装，主线程轮询并自动点掉安装确认框
+    import threading
+    result: dict = {}
+
+    def _do_install() -> None:
+        try:
+            result["cp"] = _run_adb(serial, ["install", "-r", "-t", apk_path], timeout=timeout)
+        except Exception as e:  # TimeoutExpired 或其它
+            result["err"] = e
+
+    th = threading.Thread(target=_do_install, daemon=True)
+    th.start()
+    while th.is_alive():
+        try:
+            _tap_install_confirm(ui_device)
+        except Exception:
+            pass  # u2 偶发抖动不影响安装本身
+        time.sleep(1.0)
+    th.join(timeout=5)
+
+    if "cp" in result:
+        cp = result["cp"]
+        out = f"{cp.stdout or ''}\n{cp.stderr or ''}"
+        return ("Success" in out), (out.strip()[:300] or "无输出")
+    err = result.get("err")
+    if isinstance(err, subprocess.TimeoutExpired):
+        return False, _BLOCKED_HINT
+    return False, f"adb install 异常：{err}"
+
+
+# 装不上时的可操作提示：华为/荣耀对【未备案(ICP)】应用的 adb 安装会弹「应用未备案」风险页、
+# 甚至人机验证(验证码)拦截自动化——纯代码无法可靠绕过。
+_BLOCKED_HINT = (
+    "安装超时：设备端未完成安装。若为华为/荣耀机安装【未备案(ICP)】应用，"
+    "会弹「应用未备案」风险页或人机验证(验证码)拦截自动安装，无法自动确认。"
+    "解决：改用已ICP备案的包、在设备上预装好被测应用并去掉『换测试包』配置，或改用非华为真机执行。"
+)
+
+
+def _tap_install_confirm(d) -> None:
+    """自动点掉 OEM 安装确认框(逐次调用，点到什么算什么)。
+    - com.android.packageinstaller：系统安装确认框 → 点「继续安装/安装/确定」文案按钮。
+    - com.huawei.appmarket：华为「外部来源/未备案」风险页 → 勾「已了解风险」并点 continue 按钮
+      (用 resource-id 定位，避免误点该页推荐应用的『安装』按钮)。
+    - 华为 captchakit 人机验证无法自动通过，交由外层超时兜底。
+    """
+    cur = (d.app_current() or {}).get("package", "") or ""
+    if "packageinstall" in cur:
+        for t in _INSTALL_CONFIRM_LABELS:
+            el = d(text=t)
+            if el.exists:
+                el.click()
+                logger.info("自动确认安装框：点击「%s」", t)
+                return
+    elif "huawei.appmarket" in cur:
+        cb = d(resourceId="com.huawei.appmarket:id/hidden_card_checkbox")
+        if cb.exists:
+            try:
+                checked = bool((cb.info or {}).get("checked"))
+            except Exception:
+                checked = False
+            if not checked:
+                cb.click()
+                time.sleep(0.4)
+        btn = d(resourceId="com.huawei.appmarket:id/hidden_card_install_button_continue")
+        if btn.exists:
+            btn.click()
+            logger.info("自动确认华为安装风险页(continue)")

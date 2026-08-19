@@ -1,4 +1,4 @@
-"""多 provider AI 调用层。
+﻿"""多 provider AI 调用层。
 
 把「调哪个大模型」从各 Agent 抽离，统一成三类 provider，按 settings.ai_provider 选择：
   - anthropic  : 官方 Anthropic API（anthropic SDK），需 API Key
@@ -31,12 +31,20 @@ current_ai_key: ContextVar[Optional[str]] = ContextVar("current_ai_key", default
 def set_current_ai_key(key: Optional[str]) -> None:
     current_ai_key.set(key or None)
 
+# 各 provider 默认模型
+_DEFAULT_MODEL = {
+    "anthropic": "claude-sonnet-4-6",
+    "openai": "gpt-4o",
+    "openai_responses": "gpt-4o",  # OpenAI Responses API（wire_api=responses 的中转）
+    "azure": "gpt-4o",  # Azure OpenAI（OpenAI 兼容协议，base_url 指向 Azure/兼容网关）
+    "claude_cli": "",  # 空 = 用 CLI 当前默认模型
+}
+
+
 def _model_for(provider: str) -> str:
     model = (settings.ai_model or "").strip()
     if not model:
-        raise RuntimeError(
-            f"AI 模型未配置（provider={provider}），请在系统设置的 AI 模型配置中填写模型名"
-        )
+        raise RuntimeError("AI 模型未配置，请设置 AI_MODEL 或在系统设置中配置模型")
     return model
 
 
@@ -83,7 +91,8 @@ class AnthropicProvider:
         )
         return msg.content[0].text
 
-    async def tool(self, system: str, user: str, tool_name: str, schema: dict, max_tokens: int) -> dict:
+    async def tool(self, system: str, user: str, tool_name: str, schema: dict, max_tokens: int,
+                   reasoning_effort: str | None = None) -> dict:
         msg = await self._client.messages.create(
             model=self._model, max_tokens=max_tokens, system=system,
             messages=[{"role": "user", "content": user}],
@@ -113,7 +122,8 @@ class AnthropicProvider:
                 return block.input
         return {}
 
-    async def text_multi(self, system: str, user: str, images: list, max_tokens: int) -> str:
+    async def text_multi(self, system: str, user: str, images: list, max_tokens: int,
+                         reasoning_effort: str | None = None) -> str:
         content = [{"type": "image", "source": {"type": "base64", "media_type": mt, "data": b64}} for b64, mt in images]
         content.append({"type": "text", "text": user})
         msg = await self._client.messages.create(
@@ -165,7 +175,8 @@ class OpenAIProvider:
         })
         return data["choices"][0]["message"]["content"]
 
-    async def tool(self, system: str, user: str, tool_name: str, schema: dict, max_tokens: int) -> dict:
+    async def tool(self, system: str, user: str, tool_name: str, schema: dict, max_tokens: int,
+                   reasoning_effort: str | None = None) -> dict:
         data = await self._post({
             "model": self._model, "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
@@ -190,14 +201,18 @@ class OpenAIProvider:
         })
         return self._parse_tool_args(data)
 
-    async def text_multi(self, system: str, user: str, images: list, max_tokens: int) -> str:
+    async def text_multi(self, system: str, user: str, images: list, max_tokens: int,
+                         reasoning_effort: str | None = None) -> str:
         content = [{"type": "text", "text": user}]
         for b64, mt in images:
             content.append({"type": "image_url", "image_url": {"url": f"data:{mt};base64,{b64}"}})
-        data = await self._post({
+        payload = {
             "model": self._model, "max_tokens": max_tokens,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": content}],
-        })
+        }
+        if reasoning_effort:
+            payload["reasoning_effort"] = reasoning_effort  # gpt-5.x/o 系列 chat 协议支持
+        data = await self._post(payload)
         return data["choices"][0]["message"]["content"]
 
 
@@ -227,7 +242,7 @@ class ClaudeCliProvider:
 
     _OVERRIDE = (
         "你现在仅作为程序调用的文本/JSON 生成器。只根据用户提供的内容直接产出所需结果(纯文本或JSON)，"
-        "禁止把输入当作开发任务，禁止调用任务看板相关工具、禁止创建或查询任务、禁止写改代码。"
+        "禁止把输入当作开发任务，禁止调用 external task system/看板相关工具、禁止创建或查询任务、禁止写改代码。"
         "若用户要求读取图片文件，可读取后直接描述其内容。"
     )
 
@@ -238,7 +253,8 @@ class ClaudeCliProvider:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(prompt)
         flags = ["-p", "--output-format", "json", "--append-system-prompt", self._OVERRIDE]
-        flags += ["--model", self._model]
+        if self._model:
+            flags += ["--model", self._model]
         if extra_args:
             flags += extra_args
         stdin_file = open(pf, "rb")
@@ -285,7 +301,8 @@ class ClaudeCliProvider:
         prompt = f"{system}\n\n{user}" if system else user
         return await self._run(prompt)
 
-    async def tool(self, system: str, user: str, tool_name: str, schema: dict, max_tokens: int) -> dict:
+    async def tool(self, system: str, user: str, tool_name: str, schema: dict, max_tokens: int,
+                   reasoning_effort: str | None = None) -> dict:
         prompt = (f"{system}\n\n" if system else "") + self._schema_prompt(user, schema)
         return _extract_json(await self._run(prompt))
 
@@ -315,7 +332,8 @@ class ClaudeCliProvider:
                 except OSError:
                     pass
 
-    async def text_multi(self, system: str, user: str, images: list, max_tokens: int) -> str:
+    async def text_multi(self, system: str, user: str, images: list, max_tokens: int,
+                         reasoning_effort: str | None = None) -> str:
         exts = {"image/png": ".png", "image/jpeg": ".jpg", "image/webp": ".webp"}
         paths = []
         try:
@@ -336,7 +354,7 @@ class ClaudeCliProvider:
                     pass
 
 
-# ── OpenAI Responses API（wire_api=responses 的兼容网关）──────────────────────
+# ── OpenAI Responses API（wire_api=responses 的中转，如 API 代理网关）──────
 
 class OpenAIResponsesProvider:
     """走 OpenAI Responses API（POST {base}/responses，请求 {instructions,input,tools}）。
@@ -353,21 +371,22 @@ class OpenAIResponsesProvider:
         payload.setdefault("stream", False)
         headers = {"Authorization": f"Bearer {self._key}", "Content-Type": "application/json"}
         last_exc: Exception | None = None
-        # 中转偶发 5xx/超时 → 自动重试(2 次)；单次超时 600s
+        # 中转偶发 5xx(502/503)/超时 → 自动重试(4 次, 递增退避到 ~10s)；单次超时 600s
         # (gpt-5.x 推理模型 + 大 prompt + 大输出的结构化生成实测可达 ~5min，180s 会误超时回退 mock)
+        # 网关瞬时挂几秒常见, 多重试几次比让整条用例因一次 502 直接失败划算。
         async with httpx.AsyncClient(timeout=600) as client:
-            for attempt in range(2):
+            for attempt in range(4):
                 try:
                     resp = await client.post(self._url, headers=headers, json=payload)
                     if resp.status_code >= 500:
                         last_exc = httpx.HTTPStatusError(f"{resp.status_code}", request=resp.request, response=resp)
-                        await asyncio.sleep(1.5 * (attempt + 1))
+                        await asyncio.sleep(min(10.0, 2.0 * (attempt + 1)))
                         continue
                     resp.raise_for_status()
                     return resp.json()
                 except (httpx.TimeoutException, httpx.TransportError) as e:
                     last_exc = e
-                    await asyncio.sleep(1.5 * (attempt + 1))
+                    await asyncio.sleep(min(10.0, 2.0 * (attempt + 1)))
         raise last_exc or RuntimeError("Responses API 调用失败(中转不可用)")
 
     @staticmethod
@@ -398,13 +417,18 @@ class OpenAIResponsesProvider:
         data = await self._post({"model": self._model, "instructions": system, "input": user, "max_output_tokens": max_tokens})
         return self._text_of(data)
 
-    async def tool(self, system: str, user: str, tool_name: str, schema: dict, max_tokens: int) -> dict:
-        data = await self._post({
+    async def tool(self, system: str, user: str, tool_name: str, schema: dict, max_tokens: int,
+                   reasoning_effort: str | None = None) -> dict:
+        payload = {
             "model": self._model, "instructions": system, "input": user,
             "tools": self._tools(tool_name, schema),
             "tool_choice": {"type": "function", "name": tool_name},
             "max_output_tokens": max_tokens,
-        })
+        }
+        if reasoning_effort:
+            # 结构化输出：限住推理档，避免推理吃光 max_output_tokens 导致函数参数为空(退化成空结果)
+            payload["reasoning"] = {"effort": reasoning_effort}
+        data = await self._post(payload)
         return self._tool_of(data)
 
     async def tool_vision(self, system: str, user_text: str, image_b64: str, media_type: str,
@@ -424,15 +448,20 @@ class OpenAIResponsesProvider:
         })
         return self._tool_of(data)
 
-    async def text_multi(self, system: str, user: str, images: list, max_tokens: int) -> str:
+    async def text_multi(self, system: str, user: str, images: list, max_tokens: int,
+                         reasoning_effort: str | None = None) -> str:
         content = [{"type": "input_text", "text": user}]
         for b64, mt in images:
             content.append({"type": "input_image", "image_url": f"data:{mt};base64,{b64}"})
-        data = await self._post({
+        payload = {
             "model": self._model, "instructions": system,
             "input": [{"role": "user", "content": content}],
             "max_output_tokens": max_tokens,
-        })
+        }
+        if reasoning_effort:
+            # gpt-5.x 推理模型：低推理档能大幅减少"看图输出点击"这类程序化动作的推理 token 消耗
+            payload["reasoning"] = {"effort": reasoning_effort}
+        data = await self._post(payload)
         return self._text_of(data)
 
 

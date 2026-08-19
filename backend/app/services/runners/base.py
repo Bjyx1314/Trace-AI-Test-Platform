@@ -38,17 +38,25 @@ class RunOutcome:
     ui_trace: list | None = None         # App 真机：分步轨迹 [{seq, action, expected, shots:[url], note}]
     page_captures: list | None = None    # web 执行时抓到的页面结构 [{url, page_name, regions}]，供自动补充缓存
     raw_report: dict | None = None       # 引擎原始报告，便于回溯
+    # ── AI 质量闭环：覆盖项级执行证据（方案 12.1）──
+    checked_points: list | None = None       # [{item_id, covered_item_name, status, evidence, screenshot_url, step_seq}]
+    actual_visited_pages: list | None = None # 实际访问页面 [url/page_name]
+    actual_api_calls: list | None = None     # 实际接口调用 [{method, url, status}]
+    apk_install_ok: bool | None = None       # App 换包：是否成功安装新包；None=本次未换包
+    app_launch_by_package_ok: bool | None = None  # App 启动：是否按配置包名成功调用启动；None=未配置包名
 
 
 async def run_pytest_subprocess(
     workdir: Path,
     extra_args: list[str] | None = None,
     timeout_sec: int = 120,
+    env: dict | None = None,
 ) -> dict:
     """在 workdir 内跑 `pytest --json-report` 子进程，返回报告 dict。
 
     Api/Web 等基于 pytest 的 Runner 共用。子进程用 sys.executable（即 venv python），
     确保 worker 环境的依赖一致。超时/无报告时返回带 _timeout/_stdout 的空报告，交解析层判定。
+    env：追加到子进程环境（如把数据前置变量透给脚本），不覆盖调用方未指定的既有变量。
     """
     report_path = workdir / "report.json"
     # pytest-json-report 通过 entrypoint 自动注册，勿用 -p 显式加载（会重复注册报错）
@@ -60,11 +68,13 @@ async def run_pytest_subprocess(
         "-q",
         *(extra_args or []),
     ]
+    import os
     proc = await asyncio.create_subprocess_exec(
         *cmd,
         cwd=str(workdir),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.STDOUT,
+        env={**os.environ, **(env or {})} if env else None,
     )
     try:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=timeout_sec)

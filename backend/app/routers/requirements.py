@@ -1,11 +1,11 @@
-import copy
+﻿import copy
 import mimetypes
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import or_, select
 from app.database import get_db
 from app.models import Requirement, RequirementSlice, TestCase, Defect, TestResult, Execution
 from app.schemas import (
@@ -39,6 +39,30 @@ async def _resolve_owner_name(db: AsyncSession, current_user: dict | None) -> st
     except Exception:
         pass
     return (current_user or {}).get("name")
+
+
+def _participant_names(owner_name: str | None) -> list[str]:
+    owner = (owner_name or "").strip()
+    return [owner] if owner else []
+
+
+def _add_requirement_participant(req: Requirement, owner_name: str | None) -> bool:
+    """把当前导入人登记为需求参与人；重复导入同一外部需求时复用同一 Requirement。"""
+    names = list(dict.fromkeys([n for n in (req.participant_names or []) if n]))
+    if req.owner_name and req.owner_name not in names:
+        names.insert(0, req.owner_name)
+    owner = (owner_name or "").strip()
+    if owner and owner not in names:
+        names.append(owner)
+    if names != (req.participant_names or []):
+        req.participant_names = names
+        return True
+    return False
+
+
+def _requirement_visible_to_owner(req: Requirement, owner_name: str | None) -> bool:
+    owner = (owner_name or "").strip()
+    return bool(owner and (req.owner_name == owner or owner in (req.participant_names or [])))
 
 
 # ── 需求切片 CRUD（多人多范围：阶段1，纯增量，不改现有分析/生成读写）────────────
@@ -236,6 +260,16 @@ async def requirement_coverage(req_id: str, db: AsyncSession = Depends(get_db),
     result = await agent.analyze_coverage(req.title, scope, req.analysis_confirmation, titles)
     result["case_count"] = len(titles)
     result["scoped"] = bool((req.analysis_result or {}).get("scoped"))
+    # 阶段四口径收口：以 covered_item 覆盖矩阵为主口径（sources 含 requirement 的项），
+    # LLM 漏测分析降级为兜底/旧视图。前端可优先读 matrix_coverage。
+    try:
+        from app.routers.coverage import requirement_coverage_matrix
+        matrix = await requirement_coverage_matrix(req_id, db)
+        result["matrix_coverage"] = matrix["summary"].get("requirement_coverage")
+        result["matrix_summary"] = matrix["summary"]
+        result["coverage_source"] = "covered_item_matrix"
+    except Exception:  # noqa: BLE001
+        result["coverage_source"] = "llm_legacy"
     return result
 
 
@@ -260,7 +294,7 @@ async def list_requirements(
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    # 数据可见范围：普通用户只看自己创建的需求(强制归属人=本人，忽略传入 owner)，管理员不受限。
+    # 数据可见范围：普通用户只看自己归属/参与的需求(忽略传入 owner)，管理员不受限。
     from app.services.data_scope import enforce_owner
     owner = await enforce_owner(db, current_user, owner)
     q = select(Requirement).order_by(Requirement.created_at.desc())
@@ -275,7 +309,7 @@ async def list_requirements(
         if owner == "__unassigned__":
             q = q.where(Requirement.owner_name.is_(None))
         else:
-            q = q.where(Requirement.owner_name == owner)
+            q = q.where(or_(Requirement.owner_name == owner, Requirement.participant_names.any(owner)))
     reqs = (await db.execute(q)).scalars().all()
     # 附「负责范围」数(不含默认全文)，供列表决定是否可展开
     if reqs:
@@ -297,6 +331,7 @@ async def create_requirement(body: RequirementCreate, db: AsyncSession = Depends
                              current_user: dict = Depends(get_current_user)):
     req = Requirement(**body.model_dump())
     req.owner_name = await _resolve_owner_name(db, current_user)
+    req.participant_names = _participant_names(req.owner_name)
     db.add(req)
     await db.commit()
     await db.refresh(req)
@@ -327,6 +362,7 @@ async def upload_requirement(
             product_line=product_line,
             source="upload",
             owner_name=owner_name,
+            participant_names=_participant_names(owner_name),
         )
         db.add(req)
         await db.commit()
@@ -356,6 +392,7 @@ async def upload_requirement(
             product_line=product_line,
             source="upload",
             owner_name=owner_name,
+            participant_names=_participant_names(owner_name),
         )
         db.add(req)
         await db.commit()
@@ -405,16 +442,19 @@ async def sync_feishu_requirements(project_id: str, db: AsyncSession = Depends(g
         raise HTTPException(502, f"飞书批量同步失败：{e}")
     owner_name = await _resolve_owner_name(db, current_user)
 
-    existing = set((await db.execute(
-        select(Requirement.source_record_id).where(
+    existing_rows = (await db.execute(
+        select(Requirement).where(
             Requirement.project_id == project_id,
             Requirement.source_record_id.is_not(None),
         )
-    )).scalars().all())
+    )).scalars().all()
+    existing = {r.source_record_id: r for r in existing_rows if r.source_record_id}
 
     created = []
     for rec in records:
-        if rec["record_id"] in existing:
+        existing_req = existing.get(rec["record_id"])
+        if existing_req:
+            _add_requirement_participant(existing_req, owner_name)
             continue
         req = Requirement(
             project_id=project_id,
@@ -425,6 +465,7 @@ async def sync_feishu_requirements(project_id: str, db: AsyncSession = Depends(g
             source="feishu",
             source_record_id=rec["record_id"],
             owner_name=owner_name,
+            participant_names=_participant_names(owner_name),
         )
         db.add(req)
         created.append(req)
@@ -457,6 +498,7 @@ async def sync_feishu_requirement_by_link(project_id: str, body: FeishuLinkSyncR
     )).scalars().first()
     if existing:
         # 已同步则刷新内容（重新拉取飞书最新原文），不报错
+        _add_requirement_participant(existing, await _resolve_owner_name(db, current_user))
         existing.title = record["title"]
         existing.content = record["content"]
         existing.product_line = record.get("product_line") or existing.product_line
@@ -465,6 +507,7 @@ async def sync_feishu_requirement_by_link(project_id: str, body: FeishuLinkSyncR
         await db.refresh(existing)
         return existing
 
+    owner_name = await _resolve_owner_name(db, current_user)
     req = Requirement(
         project_id=project_id,
         title=record["title"],
@@ -473,7 +516,8 @@ async def sync_feishu_requirement_by_link(project_id: str, body: FeishuLinkSyncR
         iteration=record.get("iteration"),
         source="feishu",
         source_record_id=record["record_id"],
-        owner_name=await _resolve_owner_name(db, current_user),
+        owner_name=owner_name,
+        participant_names=_participant_names(owner_name),
     )
     db.add(req)
     await db.commit()
@@ -481,46 +525,51 @@ async def sync_feishu_requirement_by_link(project_id: str, body: FeishuLinkSyncR
     return req
 
 
-@router.get("/external-system/projects")
-async def external_system_projects():
-    """列出外部任务系统中的可见项目，供选择同步源。"""
+@router.get("/external task system/projects")
+async def external_task_projects():
+    """列出 external task system 可见项目，供选择同步源。"""
     try:
         return await external_tasks.list_projects()
     except ExternalTaskError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
-        raise HTTPException(502, f"获取来源项目失败：{e}")
+        raise HTTPException(502, f"获取 external task system 项目失败：{e}")
 
 
-@router.post("/sync-external", response_model=list[RequirementOut], status_code=201)
-async def sync_external_requirements(
+@router.post("/sync-external task system", response_model=list[RequirementOut], status_code=201)
+async def sync_external_task_requirements(
     project_id: str,
-    external_project_id: str | None = None,
+    ab_project_id: str | None = None,
     db: AsyncSession = Depends(get_db),
     current_user: dict = Depends(get_current_user),
 ):
-    """根据项目批量拉取需求到当前平台项目，按id去重。"""
+    """从 external task system 批量同步需求(type=requirement)到指定平台项目，按 id 去重，source=external_task。"""
     try:
-        records = await external_tasks.fetch_requirements(external_project_id)
+        records = await external_tasks.fetch_requirements(ab_project_id)
     except ExternalTaskError as e:
         raise HTTPException(400, str(e))
     except Exception as e:
-        raise HTTPException(502, f"批量同步需求失败：{e}")
+        raise HTTPException(502, f"external task system 同步失败：{e}")
     owner_name = await _resolve_owner_name(db, current_user)
 
     records = [r for r in records if (r.get("type") or "requirement") == "requirement"]
 
-    existing = set((await db.execute(
-        select(Requirement.source_record_id).where(
+    existing_rows = (await db.execute(
+        select(Requirement).where(
             Requirement.project_id == project_id,
-            Requirement.source == "external",
+            Requirement.source == "external_task",
         )
-    )).scalars().all())
+    )).scalars().all()
+    existing = {r.source_record_id: r for r in existing_rows if r.source_record_id}
 
     created = []
     for rec in records:
         rid = rec.get("id")
-        if not rid or rid in existing:
+        if not rid:
+            continue
+        existing_req = existing.get(rid)
+        if existing_req:
+            _add_requirement_participant(existing_req, owner_name)
             continue
         req = Requirement(
             project_id=project_id,
@@ -528,9 +577,10 @@ async def sync_external_requirements(
             content=rec.get("description") or "",
             product_line=rec.get("product_line_name"),
             iteration=rec.get("target_release_id"),
-            source="external",
+            source="external_task",
             source_record_id=rid,
             owner_name=owner_name,
+            participant_names=_participant_names(owner_name),
         )
         db.add(req)
         created.append(req)
@@ -700,6 +750,17 @@ async def update_requirement(req_id: str, body: RequirementUpdate, db: AsyncSess
     await db.commit()
     await db.refresh(req)
     return req
+
+
+@router.post("/{req_id}/recompute-secondary-features")
+async def recompute_secondary_features(req_id: str, db: AsyncSession = Depends(get_db)):
+    """从需求原文重新提取二级功能并回填该需求下用例的 secondary_feature(脑图分组)。不动用例内容/source_issue_point。"""
+    req = await db.get(Requirement, req_id)
+    if not req:
+        raise HTTPException(404, "Requirement not found")
+    from app.services.secondary_feature import recompute_for_requirement
+    n = await recompute_for_requirement(db, req)
+    return {"requirement_id": req_id, "updated": n}
 
 
 @router.post("/{req_id}/complete", response_model=RequirementOut)

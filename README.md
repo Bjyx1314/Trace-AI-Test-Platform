@@ -1,4 +1,4 @@
-# TraceAI Test Platform
+﻿# TraceAI Test Platform
 
 [![License](https://img.shields.io/badge/license-Apache%202.0-blue.svg)](LICENSE)
 [![Backend](https://img.shields.io/badge/backend-FastAPI-009688.svg)](https://fastapi.tiangolo.com/)
@@ -14,7 +14,7 @@ TraceAI is an AI-assisted quality collaboration and validation platform for team
 
 > 当前项目处于早期阶段，建议先在隔离的测试环境中评估。不要将生产密钥、真实客户数据或登录态提交到仓库。
 >
-> The project is still in an early stage. Evaluate it in an isolated environment first, and do not commit production secrets, real customer data, or live sessions into the repository.
+> The project is still in an early stage. Evaluate it in an isolated environment first, and do not commit production secrets, real item data, or live sessions into the repository.
 
 ## 适合谁
 
@@ -43,7 +43,7 @@ TraceAI is an AI-assisted quality collaboration and validation platform for team
 ## 功能
 
 - AI 辅助需求分析、风险点拆解和校验用例生成
-- 接口、Web、App 多类型校验资产管理，包含评审、版本记录与执行历史
+- 接口、Web、App 多类型测试用例管理，包含评审、版本记录与执行历史
 - 接口直连、PC Web、Android 真机与 Sonic 云真机执行能力
 - App 安装包下载、卸载旧包与安装指定版本的扩展接口
 - 缺陷诊断、人工复核和质量门禁
@@ -55,7 +55,7 @@ TraceAI is an AI-assisted quality collaboration and validation platform for team
 - 接口执行支持按结构化用例中的 `tags.api_spec.service` 或 `tags.api_spec.base_url` 解析目标环境地址，便于复用外部接口框架维护的域名配置。
 - 执行路由支持按平台枚举的 `parent_key` 判定 `api`、`web`、`app` 等执行口径，减少依赖历史写死端名。
 - App 用例如果被误分到 PC/Web，会直接报错并阻止兜底执行，避免把结果落到错误站点。
-- PC Web AI 执行支持点击后自动接管新开的标签页或窗口，适配 CRM/报表类系统常见的新开页场景。
+- PC Web AI 执行支持点击后自动接管新开的标签页或窗口，适配 工作台/报表类系统常见的新开页场景。
 - Web 临时账号登录支持透传当前环境地址；当外部框架未覆盖某个端时，可降级到通用账密登录流程。
 
 ## 核心模块

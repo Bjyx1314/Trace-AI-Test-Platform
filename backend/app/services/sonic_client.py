@@ -1,4 +1,4 @@
-"""Sonic 云真机平台客户端 —— 供后端程序化 列设备 / 占用取远程adb / 释放。
+﻿"""Sonic 云真机平台客户端 —— 供后端程序化 列设备 / 占用取远程adb / 释放。
 
 接口契约(源码确证，见 SonicCloudOrg/sonic-server)：
 - 基址：settings.sonic_base_url，形如 http://host:3000/api/controller
@@ -19,6 +19,56 @@ import httpx
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+# 全局登记「当前平台占用中的 Sonic 真机 udId」。占用时登记、释放时移除。
+# 用途：进程优雅关闭(部署/重启发 SIGTERM)时统一释放，避免执行被打断后 finally 未执行、真机卡在 DEBUGGING。
+_ACTIVE_OCCUPIED: set[str] = set()
+
+
+async def release_all_occupied() -> int:
+    """释放所有登记在案的占用（优雅关闭钩子调用，best-effort）。返回释放台数。"""
+    uds = list(_ACTIVE_OCCUPIED)
+    if not uds:
+        return 0
+    try:
+        cli = SonicClient()
+    except Exception:
+        return 0
+    n = 0
+    for ud in uds:
+        try:
+            await cli.release(ud)
+            n += 1
+            logger.info("优雅关闭：释放残留占用的 Sonic 真机 %s", ud)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("优雅关闭释放 %s 失败：%s", ud, e)
+        _ACTIVE_OCCUPIED.discard(ud)
+    return n
+
+
+async def release_self_stale() -> int:
+    """启动回收：释放【本平台账号占用、且卡在使用中(非 ONLINE/离线)】的真机。
+    进程刚启动、无执行在跑，这类必是上次崩溃/被部署打断留下的泄漏占用，直接放掉。返回释放台数。"""
+    self_user = (settings.sonic_username or "").strip()
+    if not self_user:
+        return 0
+    try:
+        cli = SonicClient()
+        devs = await cli.list_android_devices()
+    except Exception:
+        return 0
+    n = 0
+    for d in devs:
+        occ = (d.get("occupied_by") or "").strip()
+        st = (d.get("status") or "").upper()
+        if occ == self_user and st not in ("ONLINE", "", "DISCONNECTED", "OFFLINE"):
+            try:
+                await cli.release(d.get("udId"))
+                n += 1
+                logger.info("启动回收：释放残留占用的 Sonic 真机 %s (status=%s)", d.get("udId"), st)
+            except Exception as e:  # noqa: BLE001
+                logger.warning("启动回收释放 %s 失败：%s", d.get("udId"), e)
+    return n
 
 
 class SonicError(RuntimeError):
@@ -89,14 +139,16 @@ class SonicClient:
             r.raise_for_status()
             data = (r.json() or {}).get("data") or {}
         sas = data.get("sas") or ""
-        # sas 形如 "adb connect 203.0.113.10:30000"；取末尾 ip:port
+        # sas 形如 "adb connect 127.0.0.1:30000"；取末尾 ip:port
         endpoint = sas.replace("adb connect", "").strip()
         if not endpoint or ":" not in endpoint:
             raise SonicError(f"Sonic 占用 {ud_id} 未返回有效 adb 端点：{data}")
+        _ACTIVE_OCCUPIED.add(ud_id)  # 登记占用，供优雅关闭统一释放
         return endpoint
 
     async def release(self, ud_id: str) -> None:
         """释放设备（best-effort，不抛，失败仅日志——agent 侧仍会超时自动释放）。"""
+        _ACTIVE_OCCUPIED.discard(ud_id)  # 无论释放成败都撤销登记，避免关闭时重复释放
         try:
             async with httpx.AsyncClient() as client:
                 await client.get(f"{self._base}/devices/release",

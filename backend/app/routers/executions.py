@@ -1,4 +1,4 @@
-import logging
+﻿import logging
 
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -37,7 +37,8 @@ async def download_app_package_file(key: str):
 async def list_app_packages(app: str):
     """某个 app 端可选的测试包版本（执行弹框「更换测试包」下拉数据源）。
 
-    真实的包版本查询接口待外部提供，现由 services/app_packages 返回内置测试项打通链路。
+    数据源=Jenkins 构建记录接口(settings.jenkins_build_api)，按项目名「{prefix}{app}」查安卓包；
+    该端在 Jenkins 无对应项目/无安卓构建时返回空列表（前端提示「该端暂无构建包」，非未接入）。
     """
     from app.services.app_packages import list_packages
     return {"app": app, "packages": list_packages(app)}
@@ -84,12 +85,19 @@ async def list_connected_devices(db: AsyncSession = Depends(get_db)):
     if settings.sonic_enabled:
         try:
             from app.services.sonic_client import SonicClient
+            # Sonic 的 user 字段是「持久绑定/占用者」而非可释放的实时锁：真正在用的设备状态是
+            # DEBUGGING/TESTING（online=False，上面已被过滤掉）。到这里的都是 ONLINE=空闲设备，
+            # 只是 user 常年绑成平台账号(sonic_username)。故：占用者==平台自己账号视为可复用(不算 busy)，
+            # 仅当被【别的】用户占用才算 busy。否则空闲真机会被误标「占用中」。
+            self_user = (settings.sonic_username or "").strip()
             for d in await SonicClient().list_android_devices():
                 if not d.get("online"):
                     continue
+                occ = (d.get("occupied_by") or "").strip()
+                busy = bool(occ) and occ != self_user
                 sonic_devices.append({
                     "serial": f"sonic:{d['udId']}", "model": d["model"], "source": "sonic",
-                    "busy": bool(d.get("occupied_by")), "occupied_by": d.get("occupied_by") or None,
+                    "busy": busy, "occupied_by": occ if busy else None,
                     "is_public": True,  # 远程真机对所有人可用（公共池）
                 })
         except Exception as e:
@@ -101,11 +109,25 @@ async def list_connected_devices(db: AsyncSession = Depends(get_db)):
             "app_queue": int(app_queue), "error": None}
 
 
+@router.get("/app-tenant-support")
+async def app_tenant_support(apps: str = ""):
+    """给定 App 端(逗号分隔的端名/label)，返回各端是否需要选/切租户。
+    执行弹框据此只对【配方里 needs_tenant=True 的端】(如Android App、Android App)显示『期望租户』框。"""
+    from app.services.runners import app_login
+    result: dict[str, bool] = {}
+    for a in [s.strip() for s in apps.split(",") if s.strip()]:
+        try:
+            result[a] = await app_login.needs_tenant(a, a)
+        except Exception:
+            result[a] = False
+    return result
+
+
 @router.get("/web-accounts")
 async def list_web_accounts(platforms: str = ""):
     """列出给定 PC 端在自动化框架里已配的账号(只读)，供执行弹框选择/切换账号。
 
-    platforms：逗号分隔的端名(如 web-admin,web-portal)。返回 {端: [{role,label}]}。
+    platforms：逗号分隔的端名(如 web-admin,用户门户)。返回 {端: [{role,label}]}。
     框架未覆盖的端返回空列表(前端则只提供「临时账号」输入)。
     """
     from app.services.web_login import account_meta
@@ -147,6 +169,43 @@ async def list_executions(
         q = q.where(Execution.id.in_(subq))
     result = await db.execute(q)
     return result.scalars().all()
+
+
+@router.get("/active")
+async def list_active_executions(
+    requirement_id: str | None = None,
+    project_id: str | None = None,
+    db: AsyncSession = Depends(get_db),
+):
+    """进行中（pending/running）的执行 + 其覆盖的用例 id。
+
+    供需求详情页让【任意查看者】都能看到「正在执行的用例」状态（不再只靠发起人本地存储）。
+    requirement_id：按该需求下用例过滤（一次执行横跨多需求时，只要涉及该需求即返回）。
+    """
+    q = (
+        select(Execution.id, Execution.status, Execution.case_ids, Execution.name)
+        .where(Execution.status.in_(("pending", "running")))
+        .order_by(Execution.created_at.desc())
+    )
+    if project_id:
+        q = q.where(Execution.project_id == project_id)
+    rows = (await db.execute(q)).all()
+
+    req_case_ids: set[str] | None = None
+    if requirement_id:
+        req_case_ids = set((await db.execute(
+            select(TestCase.id).where(TestCase.requirement_id == requirement_id)
+        )).scalars().all())
+
+    out = []
+    for r in rows:
+        cids = list(r.case_ids or [])
+        if req_case_ids is not None:
+            cids = [c for c in cids if c in req_case_ids]
+            if not cids:
+                continue  # 该执行不涉及本需求
+        out.append({"id": r.id, "status": r.status, "case_ids": cids, "name": r.name})
+    return out
 
 
 @router.get("/requirement-overview")
@@ -263,10 +322,18 @@ async def create_execution(
         trigger=body.trigger,
         status="pending",
         total=len(case_ids),
+        case_ids=list(case_ids),  # 落库，供任意查看者从服务端还原「正在执行的用例」
     )
     db.add(execution)
     await db.commit()
     await db.refresh(execution)
+
+    # 换包/自动登录入参落日志：排查「选了换包却没装」这类问题时，一眼看清后端到底收到没有。
+    logger.info(
+        "execution %s 创建：cases=%d target_device=%s env=%s package_overrides=%s app_login_keys=%s",
+        execution.id, len(case_ids), body.target_device, body.env,
+        body.package_overrides, list((body.app_login or {}).keys()),
+    )
 
     # 执行模式分流（详设 P1）：
     # - real：入 RQ 队列，由独立执行机(worker)真实执行（接口走 ApiRunner，未就绪端回退 Mock）
@@ -276,11 +343,11 @@ async def create_execution(
         # 优先级高于 RQ —— 否则 enqueue 成功但无 worker 消费会卡死(任务永远 pending)。
         if settings.execution_inproc:
             from app.services.execution_runner import run_execution
-            background_tasks.add_task(run_execution, execution.id, case_ids, body.run_mode, body.account_overrides, body.reorder, ai_key, body.target_device, body.env, body.package_overrides)
+            background_tasks.add_task(run_execution, execution.id, case_ids, body.run_mode, body.account_overrides, body.reorder, ai_key, body.target_device, body.env, body.package_overrides, body.app_login)
             return execution
         try:
             from app.services.queue import enqueue_execution
-            enqueue_execution(execution.id, case_ids, body.run_mode, body.account_overrides, body.reorder, ai_key, body.target_device, body.env, body.package_overrides)
+            enqueue_execution(execution.id, case_ids, body.run_mode, body.account_overrides, body.reorder, ai_key, body.target_device, body.env, body.package_overrides, body.app_login)
         except Exception as e:
             # 队列不可用（Redis 未起/worker 缺失）：
             if settings.mock_allowed:
@@ -311,6 +378,63 @@ async def get_execution(exec_id: str, db: AsyncSession = Depends(get_db)):
     if not ex:
         raise HTTPException(404, "Execution not found")
     return ex
+
+
+@router.get("/{exec_id}/logs")
+async def get_execution_logs(exec_id: str, after: int = 0, case_id: str | None = None,
+                             db: AsyncSession = Depends(get_db)):
+    """执行实时日志（供「查看执行日志」轮询）。返回执行状态 + after 之后的新日志行。
+    给了 case_id 则只返回该用例的日志(+批次级行)——批量执行时点某条用例只看它自己的日志。"""
+    from app.services import execution_control
+    ex = await db.get(Execution, exec_id)
+    if not ex:
+        raise HTTPException(404, "Execution not found")
+    return {"status": ex.status, "logs": execution_control.get_logs(exec_id, after, case_id)}
+
+
+@router.post("/{exec_id}/cancel")
+async def cancel_execution(
+    exec_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """取消执行：置取消标志，执行器/Runner 会在下一个用例/动作前尽快中断。
+
+    只对 pending/running 生效；已结束的直接回当前状态。真正的终态由执行器收尾时落库。
+    """
+    from app.services import execution_control
+    ex = await db.get(Execution, exec_id)
+    if not ex:
+        raise HTTPException(404, "Execution not found")
+    if ex.status not in ("pending", "running"):
+        return {"ok": False, "status": ex.status, "message": "执行已结束"}
+    execution_control.request_cancel(exec_id)
+    execution_control.log(exec_id, "⛔ 收到取消请求，正在停止当前用例…", "warn")
+    logger.info("execution %s 收到取消请求（用户 %s）", exec_id, current_user.get("sub"))
+    return {"ok": True, "status": ex.status}
+
+
+@router.post("/{exec_id}/cancel-case/{case_id}")
+async def cancel_execution_case(
+    exec_id: str,
+    case_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    """只取消批次里的某一条用例（点单个用例后面的"取消测试"）：停这条、批次其余用例继续跑。
+
+    正在跑的这条约 2s 内被打断并记为"已取消"；还没轮到的这条会被跳过。整条执行不置取消。
+    """
+    from app.services import execution_control
+    ex = await db.get(Execution, exec_id)
+    if not ex:
+        raise HTTPException(404, "Execution not found")
+    if ex.status not in ("pending", "running"):
+        return {"ok": False, "status": ex.status, "message": "执行已结束"}
+    execution_control.request_cancel_case(case_id)
+    execution_control.log(exec_id, "⛔ 收到单条用例取消请求，正在停止该用例…", "warn", case_id=case_id)
+    logger.info("execution %s 用例 %s 收到单条取消请求（用户 %s）", exec_id, case_id, current_user.get("sub"))
+    return {"ok": True, "status": ex.status}
 
 
 @router.get("/{exec_id}/results", response_model=list[TestResultOut])

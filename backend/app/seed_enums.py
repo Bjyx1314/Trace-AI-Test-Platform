@@ -1,4 +1,4 @@
-"""枚举种子数据初始化脚本（幂等，可重复执行）。
+﻿"""枚举种子数据初始化脚本（幂等，可重复执行）。
 
 用法:
     python -m app.seed_enums
@@ -8,6 +8,8 @@
   - 不存在条目：插入（如端的 api）
   - 数据库中存在但不在 SEED_DATA 的条目（如在「枚举管理」页手动添加的）：原样保留，绝不删除
   - UPDATE_LABELS 中的条目额外更新 label（key 不变）
+  - 例外：category ∈ {platform, base_url} 仅在整类为空时首次播种。这些以端名作 key、可在 UI 改名
+    （原地改 key），若仍按 key upsert 会把改过的条目按旧名复活成重复项，故有数据后一律跳过该类。
 """
 from __future__ import annotations
 import asyncio
@@ -31,7 +33,7 @@ SEED_DATA: list[tuple[str, str, str, str | None, int]] = [
     ("product_line", "commerce", "交易系统", None, 2),
     ("product_line", "growth", "用户增长", None, 3),
 
-    # ── 功能模块 ──────────────────────────────────────────────────────────────
+    # ── 通用示例功能模块 ─────────────────────────────────────────────────────
     ("module", "users", "用户管理", None, 1),
     ("module", "projects", "项目管理", None, 2),
     ("module", "orders", "订单管理", None, 3),
@@ -46,6 +48,11 @@ SEED_DATA: list[tuple[str, str, str, str | None, int]] = [
     ("platform", "android-app", "Android App", "app", 3),
     ("platform", "ios-app", "iOS App", "app", 4),
     ("platform", "mini-app", "示例小程序", "miniprogram", 5),
+    # 端名可在「枚举管理」里改；下列为全新部署的初始默认名。改名后播种器不再复活旧名，
+    # 详见 seed() 里 platform「仅整类为空时首次播种」的说明。
+    # 「接口」是 requirement_analyst/testcase_generator 给纯接口用例打的端标签(非业务系统)，
+    # 执行口径固定为 api，走 ApiRunner 直连，不走 PC/App 真机。
+    ("platform", "接口", "接口", "api", 14),
     # 注：api 不是「端」，只是用例类型(case_type=api / 接口)。历史曾把 api 塞进 platform 端，
     # 已由迁移 p0d1e2f3a4b5 删除该端枚举并清理存量用例 platforms 里的 'api'，此处不再登记。
 
@@ -90,6 +97,11 @@ SEED_DATA: list[tuple[str, str, str, str | None, int]] = [
     ("source", "manual", "手动创建", None, 1),
     ("source", "feishu", "飞书文档", None, 2),
     ("source", "jira", "JIRA", None, 3),
+
+    # ── App 执行环境（App 自动登录选环境；执行弹框读 enumsApi.list('app_env')）──
+    ("app_env", "dev", "开发环境", None, 1),
+    ("app_env", "test", "测试环境", None, 2),
+    ("app_env", "staging", "预发环境", None, 3),
 ]
 
 
@@ -108,10 +120,26 @@ async def seed() -> None:
                 row.label = new_label
                 updated += 1
 
+        # 可在「枚举管理」里改名（原地改 key）的分类：仅在整类为空（全新部署首次）时才播种。
+        # 这些分类以端名作 key（platform=端本身；base_url=各端 SIT 地址），若仍按 key upsert，
+        # 用户改过 key 的条目会因旧 key 找不到被当作「缺失」在每次启动重新插入，产生重复项
+        # （如 Android App 与改后的 Android App 并存）。故有数据后播种器一律跳过，不复活也不覆盖。见排障 6fb104b4。
+        FIRST_BOOT_ONLY = {"platform", "base_url"}
+        seeded_categories = {
+            r for (r,) in (await db.execute(
+                select(EnumDefinition.category)
+                .where(EnumDefinition.category.in_(FIRST_BOOT_ONLY))
+                .distinct()
+            )).all()
+        }
+
         # 2. upsert：有则同步 parent_key/sort_order，无则插入；不在 SEED_DATA 的一律保留（绝不删除）
         inserted = 0
         synced = 0
         for category, key, label, parent_key, sort_order in SEED_DATA:
+            # 首次播种分类且已有数据：跳过，尊重 UI 维护（既不复活旧名、也不覆盖分组/排序/地址）
+            if category in FIRST_BOOT_ONLY and category in seeded_categories:
+                continue
             existing = (await db.execute(
                 select(EnumDefinition).where(
                     EnumDefinition.category == category,

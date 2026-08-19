@@ -1,20 +1,23 @@
-"""临时账号登录子进程 —— 复用 PC 自动化框架的登录流程，把 storageState 存到指定临时文件。
+"""Temporary login subprocess for an external Web automation framework.
 
-由 app.services.web_login.login_temp 以子进程方式调用。账号密码经环境变量传入(不落盘、不入框架)。
-所需环境变量：
-  TL_FRAMEWORK_ROOT  框架根目录
-  TL_FLOW_CLASS      登录流程类，格式 package.module:ClassName
-  TL_FLOW_TENANT     true 表示 login_and_assert 需要 tenant_name
-  TL_BASE_URL        被测地址
-  TL_OUT             storageState 输出文件路径(临时)
-  TL_USER / TL_PASS  临时账号密码
-  TL_TENANT          可选租户名
+The caller passes credentials through environment variables. This script writes
+only the requested temporary storageState file.
+
+Required environment variables:
+  TL_FRAMEWORK_ROOT  framework root, for example ./frameworks/web
+  TL_FLOW            flow label used only in errors
+  TL_FLOW_CLASS      login flow class as module.path:ClassName
+  TL_BASE_URL        target base URL
+  TL_OUT             temporary storageState output path
+  TL_USER / TL_PASS  temporary account credentials
+  TL_HAS_TENANT      whether tenant_name should be passed to login_and_assert
+  TL_TENANT          optional tenant name
 """
 from __future__ import annotations
 
+from importlib import import_module
 import os
 import sys
-import importlib
 from pathlib import Path
 
 from playwright.sync_api import sync_playwright
@@ -23,22 +26,32 @@ FRAMEWORK_ROOT = Path(os.environ["TL_FRAMEWORK_ROOT"])
 if str(FRAMEWORK_ROOT) not in sys.path:
     sys.path.insert(0, str(FRAMEWORK_ROOT))
 
+FLOW = os.environ.get("TL_FLOW") or "default"
 FLOW_CLASS = os.environ.get("TL_FLOW_CLASS") or ""
-FLOW_TENANT = (os.environ.get("TL_FLOW_TENANT") or "false").lower() == "true"
 BASE_URL = os.environ["TL_BASE_URL"]
 OUT = os.environ["TL_OUT"]
 USER = os.environ["TL_USER"]
 PWD = os.environ["TL_PASS"]
+HAS_TENANT = (os.environ.get("TL_HAS_TENANT") or "").strip().lower() in {"1", "true", "yes", "y"}
 TENANT = os.environ.get("TL_TENANT") or None
 
 
+def _load_flow_class(path: str):
+    """Load a configured login flow class from module.path:ClassName."""
+    mod_name, sep, class_name = path.partition(":")
+    if not sep or not mod_name or not class_name:
+        raise SystemExit("TL_FLOW_CLASS must be configured as module.path:ClassName")
+    try:
+        mod = import_module(mod_name)
+        return getattr(mod, class_name)
+    except Exception as exc:
+        raise SystemExit(f"Failed to load login flow {FLOW!r}: {exc}") from exc
+
+
 def _make_flow(page):
-    """动态加载部署者配置的登录流程类。"""
-    if ":" not in FLOW_CLASS:
-        raise SystemExit("TL_FLOW_CLASS 必须使用 package.module:ClassName 格式")
-    module_name, class_name = FLOW_CLASS.split(":", 1)
-    flow_class = getattr(importlib.import_module(module_name), class_name)
-    return flow_class(page, BASE_URL), FLOW_TENANT
+    """Return (flow instance, whether tenant is supported)."""
+    cls = _load_flow_class(FLOW_CLASS)
+    return cls(page, BASE_URL), HAS_TENANT
 
 
 def main() -> int:
@@ -53,7 +66,7 @@ def main() -> int:
             else:
                 flow.login_and_assert(username=USER, password=PWD)
             if "/login" in page.url.lower():
-                print("仍在登录页，临时账号登录失败")
+                print("Login failed: still on the login page")
                 return 2
             Path(OUT).parent.mkdir(parents=True, exist_ok=True)
             context.storage_state(path=OUT)

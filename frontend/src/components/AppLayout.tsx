@@ -4,10 +4,12 @@ import { useNavigate, useLocation } from 'react-router-dom'
 import { Popover } from 'antd'
 import { useProjectStore } from '../store/projectStore'
 import { useAuthStore } from '../store/authStore'
+import { useUiStore } from '../store/uiStore'
 import { projectsApi, usersApi } from '../api'
 import { TECH_GRADIENT } from '../styles/theme'
 
 const SIDER_WIDTH = 236
+const SIDER_WIDTH_COLLAPSED = 66
 
 type NavItem = { key: string; icon: string; label: string; adminOnly?: boolean; match?: (p: string) => boolean }
 type NavGroup = { label: string; items: NavItem[] }
@@ -23,11 +25,16 @@ const NAV_GROUPS: NavGroup[] = [
     { key: '/defects', icon: 'bug_report', label: '缺陷复核' },
   ]},
   { label: 'AI 执行', items: [
+    { key: '/code-graph', icon: 'account_tree', label: '代码事实图谱' },
     { key: '/page-cache', icon: 'schema', label: '页面结构缓存' },
+    { key: '/data-orchestration', icon: 'database', label: '数据编排', adminOnly: true },
   ]},
   { label: '系统', items: [
+    { key: '/project-settings', icon: 'settings', label: '项目设置' },
+    { key: '/quality-rules', icon: 'rule', label: '质量规则', adminOnly: true },
     { key: '/frameworks', icon: 'deployed_code', label: '框架仓库', adminOnly: true },
     { key: '/enums', icon: 'label', label: '枚举管理', adminOnly: true },
+    { key: '/app-login-recipes', icon: 'passkey', label: 'App 登录配方', adminOnly: true },
     { key: '/users', icon: 'group', label: '用户管理', adminOnly: true },
     { key: '/system-settings', icon: 'tune', label: '系统设置', adminOnly: true },
   ]},
@@ -39,11 +46,16 @@ const TITLE_MAP: { test: (p: string) => boolean; title: string }[] = [
   { test: (p) => p.startsWith('/requirements'), title: '需求列表' },
   { test: (p) => p.startsWith('/testcases/list'), title: '用例列表' },
   { test: (p) => p.startsWith('/testcases'), title: '用例库' },
+  { test: (p) => p.startsWith('/code-graph'), title: '代码事实图谱' },
   { test: (p) => p.startsWith('/executions'), title: '执行历史' },
   { test: (p) => p.startsWith('/defects'), title: '缺陷复核' },
   { test: (p) => p.startsWith('/page-cache'), title: '页面结构缓存' },
+  { test: (p) => p.startsWith('/project-settings'), title: '项目设置' },
+  { test: (p) => p.startsWith('/quality-rules'), title: '质量规则' },
+  { test: (p) => p.startsWith('/data-orchestration'), title: '数据编排' },
   { test: (p) => p.startsWith('/frameworks'), title: '框架仓库' },
   { test: (p) => p.startsWith('/enums'), title: '枚举管理' },
+  { test: (p) => p.startsWith('/app-login-recipes'), title: 'App 登录配方' },
   { test: (p) => p.startsWith('/users'), title: '用户管理' },
   { test: (p) => p.startsWith('/system-settings'), title: '系统设置' },
 ]
@@ -53,6 +65,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
   const location = useLocation()
   const { currentProject, projects, setCurrentProject, setProjects } = useProjectStore()
   const { user, isAdmin, logout } = useAuthStore()
+  const { sidebarCollapsed, toggleSidebar } = useUiStore()
   const path = location.pathname
 
   const handleLogout = () => {
@@ -87,11 +100,12 @@ export default function AppLayout({ children }: { children: ReactNode }) {
     <div style={{ display: 'flex', height: '100vh', width: '100%', overflow: 'hidden', background: '#F7F9FB' }}>
       {/* ===== SIDEBAR ===== */}
       <aside style={{
-        width: SIDER_WIDTH, flex: 'none', background: '#fff', borderRight: '1px solid #ECEFF2',
-        display: 'flex', flexDirection: 'column', height: '100%',
+        width: sidebarCollapsed ? SIDER_WIDTH_COLLAPSED : SIDER_WIDTH, flex: 'none', background: '#fff',
+        borderRight: '1px solid #ECEFF2', display: 'flex', flexDirection: 'column', height: '100%',
+        transition: 'width .18s ease', overflow: 'hidden',
       }}>
         {/* logo */}
-        <div style={{ padding: '20px 18px 16px', display: 'flex', alignItems: 'center', gap: 11 }}>
+        <div style={{ padding: sidebarCollapsed ? '20px 0 16px' : '20px 18px 16px', display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'center' : 'flex-start', gap: 11 }}>
           <div style={{
             width: 38, height: 38, borderRadius: 11, background: TECH_GRADIENT, display: 'flex',
             alignItems: 'center', justifyContent: 'center', boxShadow: '0 5px 14px -5px rgba(217,119,87,.5)',
@@ -102,12 +116,14 @@ export default function AppLayout({ children }: { children: ReactNode }) {
               <circle cx="11" cy="2" r="1.3" fill="#fff" opacity="0.9" />
             </svg>
           </div>
-          <div style={{ lineHeight: 1.1 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: '.3px', color: '#0F172A' }}>
-              Trace<span style={{ color: '#D97757', fontSize: 11, fontWeight: 500, marginLeft: 3, verticalAlign: 2 }}>AI</span>
+          {!sidebarCollapsed && (
+            <div style={{ lineHeight: 1.1 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, letterSpacing: '.3px', color: '#0F172A' }}>
+                Trace<span style={{ color: '#D97757', fontSize: 11, fontWeight: 500, marginLeft: 3, verticalAlign: 2 }}>AI</span>
+              </div>
+              <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: '#94A3B8', marginTop: 3, letterSpacing: '.8px' }}>TEST PLATFORM</div>
             </div>
-            <div style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: 10, color: '#94A3B8', marginTop: 3, letterSpacing: '.8px' }}>TEST PLATFORM</div>
-          </div>
+          )}
         </div>
 
         {/* nav */}
@@ -117,13 +133,17 @@ export default function AppLayout({ children }: { children: ReactNode }) {
             if (!items.length) return null
             return (
               <div key={g.label}>
-                <div style={{ fontSize: 11, fontWeight: 500, color: '#94A3B8', letterSpacing: '1.2px', padding: '12px 22px 6px' }}>{g.label}</div>
+                {!sidebarCollapsed && (
+                  <div style={{ fontSize: 11, fontWeight: 500, color: '#94A3B8', letterSpacing: '1.2px', padding: '12px 22px 6px' }}>{g.label}</div>
+                )}
+                {sidebarCollapsed && <div style={{ height: 1, background: '#F1F4F7', margin: '10px 14px 6px' }} />}
                 {items.map((it) => {
                   const active = isActive(it)
                   return (
-                    <a key={it.key} onClick={() => navigate(it.key)}
+                    <a key={it.key} onClick={() => navigate(it.key)} title={sidebarCollapsed ? it.label : undefined}
                       style={{
-                        display: 'flex', alignItems: 'center', gap: 11, padding: '9px 14px', margin: '2px 12px',
+                        display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'center' : 'flex-start',
+                        gap: 11, padding: sidebarCollapsed ? '9px 0' : '9px 14px', margin: sidebarCollapsed ? '2px 10px' : '2px 12px',
                         borderRadius: 10, fontSize: 13.5, cursor: 'pointer', textDecoration: 'none', transition: 'all .15s',
                         color: active ? '#B5600A' : '#64748B', background: active ? '#FEF3EE' : 'transparent',
                         fontWeight: active ? 600 : 400,
@@ -132,7 +152,7 @@ export default function AppLayout({ children }: { children: ReactNode }) {
                       onMouseLeave={(e) => { if (!active) { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.color = '#64748B' } }}
                     >
                       <span className="ms" style={{ fontSize: 20 }}>{it.icon}</span>
-                      <span>{it.label}</span>
+                      {!sidebarCollapsed && <span>{it.label}</span>}
                     </a>
                   )
                 })}
@@ -143,17 +163,21 @@ export default function AppLayout({ children }: { children: ReactNode }) {
 
         {/* user footer */}
         <div style={{ padding: 12, borderTop: '1px solid #ECEFF2' }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 11, padding: '8px 10px', borderRadius: 11 }}>
-            <div style={{
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: sidebarCollapsed ? 'center' : 'flex-start', gap: 11, padding: sidebarCollapsed ? '8px 0' : '8px 10px', borderRadius: 11 }}>
+            <div title={sidebarCollapsed ? displayName : undefined} style={{
               width: 34, height: 34, flex: 'none', borderRadius: '50%', background: TECH_GRADIENT, color: '#fff',
               display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 14, fontWeight: 700,
             }}>{avatarChar}</div>
-            <div style={{ flex: 1, lineHeight: 1.2, minWidth: 0 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: '#1E293B', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</div>
-              <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>{isAdmin ? '管理员' : '普通用户'}</div>
-            </div>
-            <span className="ms" title="退出登录" onClick={handleLogout}
-              style={{ fontSize: 18, color: '#CBD5E1', cursor: 'pointer' }}>logout</span>
+            {!sidebarCollapsed && (
+              <>
+                <div style={{ flex: 1, lineHeight: 1.2, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: '#1E293B', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{displayName}</div>
+                  <div style={{ fontSize: 11, color: '#94A3B8', marginTop: 2 }}>{isAdmin ? '管理员' : '普通用户'}</div>
+                </div>
+                <span className="ms" title="退出登录" onClick={handleLogout}
+                  style={{ fontSize: 18, color: '#CBD5E1', cursor: 'pointer' }}>logout</span>
+              </>
+            )}
           </div>
         </div>
       </aside>
@@ -164,6 +188,16 @@ export default function AppLayout({ children }: { children: ReactNode }) {
           height: 62, flex: 'none', background: 'rgba(247,249,251,.82)', backdropFilter: 'blur(8px)',
           borderBottom: '1px solid #ECEFF2', display: 'flex', alignItems: 'center', padding: '0 26px', gap: 16, zIndex: 5,
         }}>
+          <button onClick={toggleSidebar} title={sidebarCollapsed ? '展开目录' : '收起目录'}
+            style={{
+              width: 34, height: 34, flex: 'none', border: '1px solid #E7ECF0', background: '#fff', borderRadius: 9,
+              display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#64748B', cursor: 'pointer',
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.background = '#F3F6F8'; e.currentTarget.style.color = '#1E293B' }}
+            onMouseLeave={(e) => { e.currentTarget.style.background = '#fff'; e.currentTarget.style.color = '#64748B' }}
+          >
+            <span className="ms" style={{ fontSize: 20 }}>{sidebarCollapsed ? 'menu' : 'menu_open'}</span>
+          </button>
           <div style={{ fontSize: 16, fontWeight: 700, color: '#0F172A', letterSpacing: '.2px' }}>{topTitle}</div>
           <div style={{ flex: 1 }} />
           <Popover

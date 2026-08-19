@@ -1,55 +1,43 @@
-"""开源版示例项目种子（幂等）。
+"""默认项目种子（幂等）。
 
 用法:
     python -m app.seed_default_project
 
-平台的需求、用例、执行和页面缓存都需要项目上下文。项目表为空时创建一个
-不含业务数据的「示例项目」，前端会自动选中它；已存在任意项目时原样跳过。
+目的：平台的需求/用例/执行/页面缓存等都挂在项目下，但不该强制用户先建项目。
+当系统里【一个项目都没有】时，自动建一个「默认项目」，前端会自动选中它，
+于是「同步/上传需求」「页面缓存选地址」等不再被项目门槛卡住。
+已存在任意项目则原样跳过，绝不新增/覆盖。
 """
 from __future__ import annotations
 import asyncio
 
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
-from sqlalchemy.ext.asyncio import AsyncSession
 from app.database import AsyncSessionLocal
 from app.models import Project, QualityGateConfig
 
+DEFAULT_PROJECT_ID = "demo-project"
 
-DEFAULT_PROJECT_ID = "00000000-0000-4000-8000-000000000001"
 
-
-async def ensure_default_project(db: AsyncSession) -> bool:
-    """项目表为空时创建通用示例项目，返回本次是否创建。"""
-    existing_id = (await db.execute(select(Project.id).limit(1))).scalar_one_or_none()
-    if existing_id is not None:
+async def ensure_default_project(db) -> bool:
+    existing = (await db.execute(select(Project.id).limit(1))).scalar_one_or_none()
+    if existing:
         return False
-
     project = Project(
         id=DEFAULT_PROJECT_ID,
         name="示例项目",
-        description="开源版自动创建的通用项目，可直接改名或删除。",
-        product_line="core",
+        description="系统默认示例项目（自动创建，可在项目设置中改名/调整前缀）",
         case_id_prefix="DEMO",
     )
     db.add(project)
     db.add(QualityGateConfig(project_id=project.id))
-    try:
-        await db.commit()
-    except IntegrityError:
-        # 多进程同时启动时固定主键只允许一方创建成功。
-        await db.rollback()
-        return False
+    await db.commit()
     return True
 
 
 async def seed() -> None:
     async with AsyncSessionLocal() as db:
         created = await ensure_default_project(db)
-        if created:
-            print("已创建示例项目（示例项目 / 用例前缀 DEMO）")
-        else:
-            print("已有项目，跳过示例项目创建")
+        print("已创建默认项目（示例项目 / 用例前缀 DEMO）" if created else "已有项目，跳过默认项目创建")
 
 
 if __name__ == "__main__":

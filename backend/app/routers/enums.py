@@ -110,11 +110,22 @@ async def update_enum(enum_id: str, body: EnumCreate, db: AsyncSession = Depends
     if not en:
         raise HTTPException(404, "Enum not found")
     old_label = en.label
+    old_key = en.key
     # is_active 单独处理：仅在明确传入(非 None)时改；其它字段照旧整体覆盖
     for k, v in body.model_dump(exclude={"is_active"}).items():
         setattr(en, k, v)
     if body.is_active is not None:
         en.is_active = body.is_active
+    # 端改名级联：「端(platform)」的 key 就是端名，应用包名(app_package)/各环境地址(base_url*)等映射
+    # 都用端名作 key 引用它。若只改 platform 的 key 而不同步这些映射，映射会「找不到端」而丢失。
+    # 故 platform 改名时，把所有以旧端名为 key 的非 platform 枚举一并改到新端名。
+    if en.category == "platform" and en.key != old_key:
+        deps = (await db.execute(
+            select(EnumDefinition).where(
+                EnumDefinition.key == old_key, EnumDefinition.category != "platform")
+        )).scalars().all()
+        for d in deps:
+            d.key = en.key
     try:
         await db.commit()
     except IntegrityError:

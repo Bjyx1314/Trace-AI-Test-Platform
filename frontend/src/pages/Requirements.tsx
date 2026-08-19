@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+﻿import { useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import {
   Table, Button, Modal, Upload, Tag, Space, Typography, message, Card, Input, Select,
@@ -45,8 +45,8 @@ export default function Requirements() {
   const [searchText, setSearchText] = useState('')
   const [appliedSearch, setAppliedSearch] = useState('')
   const [batchSyncing, setBatchSyncing] = useState(false)
-  const [externalProjects, setExternalProjects] = useState<{ id: string; name: string }[]>([])
-  const [externalProjectId, setExternalProjectId] = useState<string | undefined>(undefined)
+  const [abProjects, setAbProjects] = useState<{ id: string; name: string }[]>([])
+  const [abProjectId, setAbProjectId] = useState<string | undefined>(undefined)
   const [projectFilter, setProjectFilter] = useState<string | undefined>(undefined)
   const [iterationFilter, setIterationFilter] = useState<string | undefined>(undefined)
   const [sliceMap, setSliceMap] = useState<Record<string, any[]>>({})  // 展开时懒加载各需求的切片(负责范围)
@@ -156,23 +156,23 @@ export default function Requirements() {
     if (!currentProject) return
     setBatchSyncing(true)
     try {
-      const r = await requirementsApi.syncExternal(currentProject.id, externalProjectId || undefined)
-      message.success(`已批量同步 ${r.data.length} 条需求`)
+      const r = await requirementsApi.syncExternalTasks(currentProject.id, abProjectId || undefined)
+      message.success(`已从 external task system 同步 ${r.data.length} 条需求`)
       setFeishuModalOpen(false)
       load()
     } catch (err: any) {
-      message.error(err?.response?.data?.detail || '批量同步需求失败')
+      message.error(err?.response?.data?.detail || 'external task system 同步失败')
     } finally {
       setBatchSyncing(false)
     }
   }
 
-  const loadExternalProjects = async () => {
+  const loadAbProjects = async () => {
     try {
-      const r = await requirementsApi.externalProjects()
-      setExternalProjects(r.data || [])
+      const r = await requirementsApi.agentBoardProjects()
+      setAbProjects(r.data || [])
     } catch {
-      setExternalProjects([])
+      setAbProjects([])
     }
   }
 
@@ -357,7 +357,7 @@ export default function Requirements() {
       </Modal>
 
       <Modal title="同步需求" open={feishuModalOpen} onCancel={() => setFeishuModalOpen(false)} footer={null}
-        afterOpenChange={(open) => { if (open) loadExternalProjects() }}>
+        afterOpenChange={(open) => { if (open) loadAbProjects() }}>
         <Space direction="vertical" style={{ width: '100%' }} size="middle">
           <div>
             <Typography.Text strong>按飞书文档链接同步单条需求</Typography.Text>
@@ -376,17 +376,17 @@ export default function Requirements() {
               <Select
                 style={{ flex: 1 }}
                 allowClear
-                placeholder="选择来源项目（不选则拉取全部可见需求）"
-                value={externalProjectId}
-                onChange={(v) => setExternalProjectId(v)}
-                options={externalProjects.map((p) => ({ value: p.id, label: p.name }))}
+                placeholder="选择 external task system 项目（不选=全部可见需求）"
+                value={abProjectId}
+                onChange={(v) => setAbProjectId(v)}
+                options={abProjects.map((p) => ({ value: p.id, label: p.name }))}
               />
               <Button type="primary" icon={<CloudSyncOutlined />} onClick={handleBatchSync} loading={batchSyncing}>
                 同步
               </Button>
             </Space.Compact>
             <Typography.Text type="secondary" style={{ fontSize: 12 }}>
-              根据项目批量拉取需求到当前平台项目，按id去重
+              从 external task system 拉取需求(type=requirement)到当前平台项目，按 id 去重
             </Typography.Text>
           </div>
         </Space>

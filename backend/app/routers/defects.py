@@ -1,8 +1,9 @@
-"""缺陷列表/详情/状态更新 —— Agent5(DefectDiagnostician)输出的复核与流转。"""
+﻿"""缺陷列表/详情/状态更新 —— Agent5(DefectDiagnostician)输出的复核与流转。"""
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from app.database import get_db
+from app.dependencies import get_current_user
 from app.models import Defect, Execution, TestCase, Requirement
 from app.schemas import DefectOut, DefectUpdate
 from app.services.feishu_app import create_defect_ticket, FeishuError
@@ -54,23 +55,23 @@ def _compose_bug_desc(defect: Defect) -> str:
     return "\n\n".join(parts)
 
 
-async def _external_project_ids(db: AsyncSession, defect: Defect) -> list[str] | None:
-    """缺陷关联需求来自外部系统时，可返回其外部项目标识。"""
+async def _external_task_project_ids(db: AsyncSession, defect: Defect) -> list[str] | None:
+    """缺陷关联需求若来自 external task system，用其项目作为缺陷归属项目。"""
     tc = await db.get(TestCase, defect.test_case_id)
     if tc and tc.requirement_id:
         req = await db.get(Requirement, tc.requirement_id)
-        if req and req.source == "external" and req.source_record_id:
-            # 当前仅记录外部需求标识，未持久化外部项目标识。
+        if req and req.source == "external_task" and req.source_record_id:
+            # 需求同步时若记录了 external task system 项目，可在此带上；当前以需求关联表达，项目可空
             pass
     return None
 
 
-async def _related_external_requirement(db: AsyncSession, defect: Defect) -> str | None:
-    """返回缺陷关联的外部需求标识。"""
+async def _related_ab_requirement(db: AsyncSession, defect: Defect) -> str | None:
+    """缺陷关联的 external task system 需求 id（用平台需求的 source_record_id）。"""
     tc = await db.get(TestCase, defect.test_case_id)
     if tc and tc.requirement_id:
         req = await db.get(Requirement, tc.requirement_id)
-        if req and req.source == "external":
+        if req and req.source == "external_task":
             return req.source_record_id
     return None
 
@@ -126,7 +127,7 @@ async def update_defect(
     for k, v in body.model_dump(exclude_unset=True, exclude_none=True).items():
         setattr(defect, k, v)
 
-    # 缺陷确认：优先写入已配置的外部任务系统，否则回退飞书。
+    # 缺陷确认 → 建单：优先 external task system(配了 API Key)，否则回退飞书
     already_ticketed = defect.external_ticket_id or defect.feishu_ticket_id
     if defect.status == "confirmed" and not already_ticketed:
         if external_tasks.is_configured():
@@ -135,8 +136,8 @@ async def update_defect(
                     title=defect.title,
                     description=_compose_bug_desc(defect),
                     severity=defect.severity,
-                    project_ids=await _external_project_ids(db, defect),
-                    related_requirement_id=await _related_external_requirement(db, defect),
+                    project_ids=await _external_task_project_ids(db, defect),
+                    related_requirement_id=await _related_ab_requirement(db, defect),
                     reproduce_steps=_compose_repro(defect),
                     found_stage="acceptance",
                 )
@@ -156,7 +157,7 @@ async def update_defect(
             except Exception as e:
                 raise HTTPException(502, f"缺陷确认建单失败：{e}")
 
-    # 忽略或标记重复时，尽力回写外部单据状态，不阻断本地流转。
+    # 忽略 / 标记重复 → 回写 external task system 单据状态(best-effort，不阻断本地流转)
     if defect.status in ("ignored", "duplicate") and defect.external_ticket_id and external_tasks.is_configured():
         try:
             note = "测试平台标记为重复" if defect.status == "duplicate" else None
@@ -165,6 +166,11 @@ async def update_defect(
             pass
 
     await db.commit()
+
+    # 缺陷确认为真实缺陷 → found_bug_later 回填 + 沉淀高置信经验（方案 11.4）
+    if defect.status == "confirmed":
+        from app.services.defect_review import on_defect_confirmed
+        await on_defect_confirmed(db, defect)
 
     # 缺陷解决后检查关联需求是否可以标记为已完成
     if defect.status in ("ignored", "duplicate"):
@@ -177,3 +183,13 @@ async def update_defect(
     await db.refresh(defect)
     (await _attach_requirement(db, [defect]))
     return defect
+
+
+@router.post("/sync-production")
+async def sync_production(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: dict = Depends(get_current_user),
+):
+    from app.services.production_sync import sync_production_defects
+    return await sync_production_defects(db, project_id)

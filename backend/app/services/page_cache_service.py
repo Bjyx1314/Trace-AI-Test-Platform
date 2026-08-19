@@ -15,8 +15,8 @@ from datetime import datetime, timedelta, timezone
 # 缓存超 N 天未被命中则视为过期（7.3.6）
 STALE_AFTER_DAYS = 30
 
-# URL 路径段归一化规则：把易变段替换为占位符，使 /admin/users/123 与
-# /admin/users/456 命中同一 pattern（动态路由 pattern 匹配）。
+# url 路径段归一化规则：把易变段替换为占位符，使 /module/items/123 与
+# /module/items/456 命中同一 pattern（7.3.2 动态路由 pattern 匹配）。
 _UUID_RE = re.compile(
     r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$", re.I
 )
@@ -32,7 +32,7 @@ def normalize_url(url: str) -> str:
     - UUID 段 → {uuid}
     - 长 hex 段（>=16）→ {hash}
     - 末尾斜杠去除（根路径除外）
-    例： /admin/users/123?tab=1 → /admin/users/{id}
+    例： /module/items/123?tab=1 → /module/items/{id}
     """
     if not url:
         return "/"
@@ -98,8 +98,13 @@ def compute_region_hashes(regions: list[dict] | None) -> dict[str, str]:
     return result
 
 
+# 通用/无意义的默认页名：这些可以被后续解析出的具体页名(如"资源列表")覆盖升级
+_GENERIC_PAGE_NAMES = {"主页", "首页", "home", "Home", "index", ""}
+
+
 async def upsert_from_execution(db, *, project_id: str, url: str, page_name: str,
-                                regions: list[dict], base_url: str | None = None) -> bool:
+                                regions: list[dict], base_url: str | None = None,
+                                description: str | None = None) -> bool:
     """执行时遇到页面 → 自动写入/刷新共享页面结构缓存（设计 7.3.1/7.3.6 自动补充）。
     按归一化 url_pattern 去重：无则新建、有则刷新结构与 hash。返回是否新建。
     """
@@ -116,12 +121,18 @@ async def upsert_from_execution(db, *, project_id: str, url: str, page_name: str
     if entry is None:
         db.add(PageStructureCache(
             project_id=project_id, base_url=base_url, url_pattern=pattern,
-            page_name=page_name or pattern, dom_hash=dom_hash, regions=regions, status="active",
+            page_name=page_name or pattern, description=(description or None),
+            dom_hash=dom_hash, regions=regions, status="active",
         ))
         return True
-    # 不覆盖已有页面名(探索时人工命名的中文名优先)，仅在原本为空时补
-    if not (entry.page_name or "").strip():
-        entry.page_name = page_name or entry.page_name
+    # 页名：空 / 仍是通用默认(主页/首页…) / 等于 url 兜底 → 用新解析出的具体页名升级；
+    # 探索时人工命名的中文具体名(不在通用集里)则保留，不被覆盖。
+    _cur = (entry.page_name or "").strip()
+    if page_name and (_cur in _GENERIC_PAGE_NAMES or _cur == pattern):
+        entry.page_name = page_name
+    # 描述：原本为空才补(不覆盖人工填写的)
+    if description and not (entry.description or "").strip():
+        entry.description = description
     entry.dom_hash = dom_hash
     entry.regions = regions
     entry.status = "active"

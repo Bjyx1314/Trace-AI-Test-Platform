@@ -1,4 +1,4 @@
-"""页面结构缓存逻辑层单测（架构文档 7.3）。
+﻿"""页面结构缓存逻辑层单测（架构文档 7.3）。
 
 纯函数测试，不依赖 DB / FastAPI。
 """
@@ -9,12 +9,12 @@ from app.services import page_cache_service as p
 
 # ── normalize_url（7.3.2 动态路由 pattern）─────────────────────────────────
 def test_normalize_numeric_segment():
-    assert p.normalize_url("/admin/users/123?tab=1") == "/admin/users/{id}"
+    assert p.normalize_url("/module/items/123?tab=1") == "/module/items/{id}"
 
 
 def test_normalize_uuid_segment():
-    url = "https://portal.example.test/admin/users/5f47ac10-58cc-4372-a567-0e02b2c3d479/edit"
-    assert p.normalize_url(url) == "/admin/users/{uuid}/edit"
+    url = "https://app.example.test/module/items/5f47ac10-58cc-4372-a567-0e02b2c3d479/edit"
+    assert p.normalize_url(url) == "/module/items/{uuid}/edit"
 
 
 def test_normalize_long_hex_segment():

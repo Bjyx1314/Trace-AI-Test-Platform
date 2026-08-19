@@ -1,4 +1,4 @@
-"""Runner 抽象层与 Dispatcher 路由的单元测试（纯逻辑，不触达数据库/网络）。
+﻿"""Runner 抽象层与 Dispatcher 路由的单元测试（纯逻辑，不触达数据库/网络）。
 
 覆盖：
 - resolve_runner_type 按 (case_type, platforms) 的路由优先级
@@ -34,20 +34,38 @@ def test_backend_api_platform_routes_to_api_even_if_ui():
     assert resolve_runner_type(_Case(case_type="ui", platforms=["backend_api"])) == "api"
 
 
+def test_interface_tag_platform_routes_to_api():
+    # requirement_analyst/testcase_generator 打的端标签是"接口"（非 backend_api），同样要走 api
+    assert resolve_runner_type(_Case(case_type="ui", platforms=["接口"])) == "api"
+
+
 def test_miniprogram_beats_web():
     assert resolve_runner_type(_Case(platforms=["web", "miniprogram"])) == "miniprogram"
 
 
-def test_legacy_harmony_routes_to_android_worker():
-    assert resolve_runner_type(_Case(platforms=["android", "harmony"])) == "android"
+def test_pc_beats_app():
+    # 双端用例(PC端 web-admin + App端 Android App) → 按 PC/web 执行，不判成 android
+    gm = {"web-admin": "pc", "Android App": "app"}
+    assert resolve_runner_type(_Case(platforms=["Android App", "web-admin"]), gm) == "web"
+    assert resolve_runner_type(_Case(platforms=["web-admin", "Android App"]), gm) == "web"
+
+
+def test_pure_app_still_android():
+    # 纯 App 端不受 PC 优先影响，仍走真机
+    gm = {"Android App": "app"}
+    assert resolve_runner_type(_Case(platforms=["Android App"]), gm) == "android"
+
+
+def test_harmony_beats_android():
+    assert resolve_runner_type(_Case(platforms=["android", "harmony"])) == "harmony"
 
 
 def test_android_routes_to_android():
     assert resolve_runner_type(_Case(platforms=["android"])) == "android"
 
 
-def test_ios_routes_to_shared_app_worker():
-    assert resolve_runner_type(_Case(platforms=["ios"])) == "android"
+def test_ios_routes_to_ios():
+    assert resolve_runner_type(_Case(platforms=["ios"])) == "ios"
 
 
 def test_web_routes_to_web():
