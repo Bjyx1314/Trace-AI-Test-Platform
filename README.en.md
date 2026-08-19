@@ -10,7 +10,13 @@
 
 TraceAI is an AI-assisted quality collaboration and validation platform for teams. It covers requirement analysis, validation case generation, API/Web/App execution, defect review, and quality gates, and is built with FastAPI, React, PostgreSQL, Redis, Playwright, and Android device helpers.
 
-> The project is still in an early stage. Evaluate it in an isolated environment first, and do not commit production secrets, real item data, or live sessions into the repository.
+> The project is still in an early stage. Evaluate it in an isolated environment first, and do not commit production secrets, real business data, or live sessions into the repository.
+
+## Product Positioning
+
+TraceAI Test Platform is designed for end-to-end quality collaboration across product, engineering, and QA teams. It connects requirements, test cases, execution, defect review, and release gates into a traceable workflow. AI assistance is used to accelerate analysis and drafting, while structured cases, execution evidence, and human review keep the final quality decision auditable.
+
+The open-source edition is intentionally generic, deployable, and extensible. It does not bind to private business systems and does not include real accounts, requirements, datasets, app packages, or private environment configuration. External systems, AI providers, device clouds, and automation frameworks are enabled only through explicit configuration.
 
 ## Who It Is For
 
@@ -36,23 +42,36 @@ TraceAI is an AI-assisted quality collaboration and validation platform for team
 4. The platform stores execution results, screenshots, request traces, failure causes, and defect review records.
 5. Quality gates help decide whether the release is ready.
 
-## Features
+## Feature Overview
 
-- AI-assisted requirement analysis, risk breakdown, and validation case generation
-- API, Web, and App validation asset management with review flow, versioning, and execution history
-- API direct execution, desktop web execution, Android real-device execution, and Sonic cloud execution
-- App package download, uninstall-old-package, and install-specific-build extension points
-- Defect diagnostics, human review, and quality gates
-- Optional Feishu, external SSO/task system, and external automation framework integrations
-- Enum-driven product line, module, platform, and environment URL configuration
+| Capability Area | Description |
+|---|---|
+| Requirement Analysis | Register requirement documents and feature notes, then use AI assistance to extract risks, open questions, coverage suggestions, and regression scope. |
+| Case Management | Manage structured API, Web, and App cases with priorities, steps, expectations, covered items, review feedback, versions, and execution history. |
+| Multi-Channel Execution | Run API direct checks, desktop Web Playwright flows, Android device jobs, remote worker jobs, and Sonic cloud device jobs through a unified execution model. |
+| Execution Evidence | Store request traces, screenshots, error messages, execution logs, and quality gate results for defect triage, review, and release assessment. |
+| Defect Review | Support failure diagnosis, human review, defect confirmation, and rule-based quality decisions instead of relying on raw automation status alone. |
+| Configuration Center | Configure product lines, modules, platforms, environment URLs, AI, SSO, Feishu, Sonic, automation frameworks, and execution parameters in one place. |
+| Extension Integrations | Provide extension points for external task systems, automation framework repositories, application packages, code impact analysis, and quality rules. |
 
 ## Execution Notes
 
 - API execution can resolve target environments from structured case metadata such as `tags.api_spec.service` or `tags.api_spec.base_url`, which helps reuse host mappings maintained by external API frameworks.
 - Execution routing can follow platform enum `parent_key` values instead of relying only on historical hard-coded platform names.
 - If an App case is misclassified into PC/Web, the runner stops with an explicit error instead of falling back to the wrong site.
-- The desktop Web AI runner can now adopt newly opened tabs or windows after a click, which is useful for 工作台 and reporting systems that commonly open new pages.
+- The desktop Web AI runner can now adopt newly opened tabs or windows after a click, which is useful for workspace and reporting systems that commonly open new pages.
 - Temporary Web login can receive the current environment base URL, and when no external framework mapping exists for a platform, it can fall back to a generic username/password login flow.
+
+## Latest Open-Source Update
+
+This open-source update syncs the latest platform capabilities and prepares the repository for public use with generic configuration and privacy cleanup. Highlights include:
+
+- Added quality-loop capabilities such as covered items, quality rules, experience mining, code impact analysis, test data preparation, page cache, and execution evidence.
+- Improved execution routing across API, Web, and App channels, reducing reliance on historical platform names or private environment assumptions.
+- Enhanced the Web runner with new-window adoption and expanded App execution support, including login recipes, navigation recipes, OCR helpers, and remote execution support.
+- Converted external task systems, interface login, Web login, and automation framework bindings into generic configuration-driven integrations.
+- Removed business-specific examples, private paths, real accounts, login state files, uploads, build artifacts, and local caches from the public repository surface.
+- Updated bilingual documentation, configuration notes, deployment scripts, and security reminders for first-time self-hosted evaluation.
 
 ## Core Modules
 

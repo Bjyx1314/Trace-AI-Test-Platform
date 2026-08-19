@@ -1,4 +1,22 @@
-﻿# Changelog
+# Changelog
+
+## 2026-08-19
+
+### 中文
+
+- 发布最新开源版本，补充正式的产品定位、功能说明和本次开源更新说明。
+- 同步质量闭环能力，包括覆盖项、质量规则、经验沉淀、代码影响分析、数据准备、页面缓存和执行证据。
+- 增强接口、Web、App 多执行端路由与执行体验，减少对私有端名、私有环境和历史硬编码的依赖。
+- 泛化外部任务系统、接口登录、Web 登录和自动化框架配置，确保开源仓库不携带私有业务接入信息。
+- 完成发布前隐私复查，确认仓库不包含真实账号、密钥、登录态、上传文件、构建产物、安装包或私有业务数据。
+
+### English
+
+- Published the latest open-source update with formal product positioning, feature overview, and release notes.
+- Synced quality-loop capabilities including covered items, quality rules, experience mining, code impact analysis, test data preparation, page cache, and execution evidence.
+- Improved API, Web, and App execution routing while reducing reliance on private platform names, private environments, and historical hard-coded mappings.
+- Generalized external task system, interface login, Web login, and automation framework configuration for public repository use.
+- Completed a pre-release privacy review and confirmed that the repository does not include real accounts, secrets, login states, uploads, build artifacts, app packages, or private business data.
 
 ## 2026-07-03
 
